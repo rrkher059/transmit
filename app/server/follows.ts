@@ -1,5 +1,6 @@
 import path from 'node:path'
 import { z } from 'zod'
+import { getSql } from './db.ts'
 import {
   DEFAULT_DATA_DIR,
   mutateJsonFile,
@@ -64,6 +65,25 @@ export async function getFollowStats(
       )
     : false
   return { followers, following, isFollowing }
+}
+
+/** Same as getFollowStats, but reads the Postgres follows table instead of follows.json. */
+export async function getFollowStatsFromDb(
+  profileUserId: string,
+  viewerUserId?: string,
+): Promise<FollowStats> {
+  const sql = getSql()
+  const [row] = await sql<FollowStats[]>`
+    select
+      (select count(*) from follows where following_id = ${profileUserId})::int as followers,
+      (select count(*) from follows where follower_id = ${profileUserId})::int as following,
+      exists (
+        select 1 from follows
+        where follower_id = ${viewerUserId ?? null}::uuid
+          and following_id = ${profileUserId}
+      ) as "isFollowing"
+  `
+  return row
 }
 
 export async function listFollowers(

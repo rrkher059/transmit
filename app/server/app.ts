@@ -31,7 +31,7 @@ import {
 import { enforceRateLimit } from './rateLimit.ts'
 import { toggleBlock } from './blocks.ts'
 import {
-  getFollowStats,
+  getFollowStatsFromDb,
   listFollowers,
   listFollowing,
   toggleFollow,
@@ -1002,7 +1002,7 @@ export function createApp() {
     try {
       const viewer = await currentUser(c)
       const profileId = c.req.param('id')
-      const stats = await getFollowStats(profileId, viewer?.id)
+      const stats = await getFollowStatsFromDb(profileId, viewer?.id)
       return c.json({ stats })
     } catch (error) {
       console.error(error)

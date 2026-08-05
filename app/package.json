@@ -20,6 +20,7 @@
     "@hono/node-server": "^2.0.10",
     "@proj-airi/font-departure-mono": "^0.11.3",
     "hono": "^4.12.31",
+    "postgres": "^3.4.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",

@@ -1,6 +1,6 @@
 # 7RANSMI7 (`app/`)
 
-Short-lived social network: Vite + React client, Hono API, shared Zod schemas, JSON file stores.
+Short-lived social network: Vite + React client, Hono API, shared Zod schemas, JSON file stores. Posts self-delete 24 hours after posting (`TWEET_TTL_MS`, swept every 30s server-side).
 
 ## Run locally
 
@@ -12,6 +12,18 @@ npm run dev            # Vite + API (see package.json scripts)
 ```
 
 From the repo root you can also use `npm run dev` (delegates to `app/`).
+
+## Scripts
+
+| Command | Description |
+|---|---|
+| `npm run dev` | API (tsx) + Vite client, concurrently |
+| `npm run build` | Typecheck (`tsc -b`) then Vite production build |
+| `npm test` | Run the Vitest suite once |
+| `npm run test:watch` | Vitest in watch mode |
+| `npm run lint` | oxlint |
+| `npm run preview` | Preview the production build locally |
+| `npm run deploy` | Build and push `dist/` to GitHub Pages |
 
 ## Environment
 
@@ -35,7 +47,15 @@ app/
   data/      Runtime JSON files (gitignored except .gitkeep)
 ```
 
-Auth: email + password signup/login with an immediate `httpOnly` signed session cookie (no email verification). Mutating browser requests are origin/referer-checked when those headers are present.
+The full REST surface is documented as a comment above `createApp()` in `server/index.ts` — check there before adding a client call, so it stays a single source of truth instead of drifting out of sync with two lists.
+
+**Auth:** email + password signup/login, no email verification. On success the server sets an `httpOnly`, HMAC-signed session cookie (see `server/session.ts`) — there's no `Authorization`/bearer-token path. Mutating requests (`POST`/`PUT`/`DELETE`/`PATCH`) are origin/referer-checked against `ALLOWED_ORIGINS` when those headers are present, as CSRF defense for the cookie-based session.
+
+**Data:** JSON files under `data/`, no database. Reads/writes go through `server/jsonStore.ts`; tweets older than 24h and expired rate-limit buckets are purged on a 30s interval (`server/index.ts`). To reset local state, stop the server and delete `data/*.json`.
+
+## Testing
+
+`npm test` runs the Vitest suite (`server/*.test.ts`) against temp JSON stores — each test file gets its own `mkdtemp` dir via `TWEET_STORE_PATH`/`USERS_STORE_PATH`, so runs don't touch `data/` or each other.
 
 ## Deploy
 

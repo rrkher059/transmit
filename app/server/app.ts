@@ -67,10 +67,10 @@ import {
   searchTweets,
 } from './store.ts'
 import {
-  countUnreadNotifications,
-  listNotificationsForUser,
-  markNotificationsRead,
-  pushNotification,
+  countUnreadNotificationsFromDb,
+  listNotificationsForUserFromDb,
+  markNotificationsReadFromDb,
+  pushNotificationFromDb,
 } from './notifications.ts'
 import {
   authenticateUserFromDb,
@@ -672,11 +672,10 @@ export function createApp() {
       const { tweetId } = likeTweetSchema.parse({ tweetId: c.req.param('id') })
       const { tweet, justLiked, ownerId } = await likeTweetFromDb(tweetId, user.id)
       if (justLiked && ownerId) {
-        await pushNotification({
+        await pushNotificationFromDb({
           recipientId: ownerId,
           type: 'like',
           actorId: user.id,
-          actorHandle: user.handle,
           tweetId: tweet.id,
           body: tweet.body.slice(0, 80),
         })
@@ -714,11 +713,10 @@ export function createApp() {
         userId: user.id,
       })
       if (ownerId) {
-        await pushNotification({
+        await pushNotificationFromDb({
           recipientId: ownerId,
           type: 'comment',
           actorId: user.id,
-          actorHandle: user.handle,
           tweetId: tweet.id,
           body: body.slice(0, 80),
         })
@@ -757,11 +755,10 @@ export function createApp() {
         userId: user.id,
       })
       if (result.ownerId) {
-        await pushNotification({
+        await pushNotificationFromDb({
           recipientId: result.ownerId,
           type: 'repost',
           actorId: user.id,
-          actorHandle: user.handle,
           tweetId: result.original.id,
           body: result.original.body.slice(0, 80),
         })
@@ -806,11 +803,10 @@ export function createApp() {
         emoji,
       )
       if (justAdded && ownerId) {
-        await pushNotification({
+        await pushNotificationFromDb({
           recipientId: ownerId,
           type: 'reaction',
           actorId: user.id,
-          actorHandle: user.handle,
           tweetId: tweet.id,
           body: emoji,
         })
@@ -1047,11 +1043,10 @@ export function createApp() {
 
       const result = await toggleFollowFromDb(viewer.id, c.req.param('id'))
       if (result.isFollowing) {
-        await pushNotification({
+        await pushNotificationFromDb({
           recipientId: c.req.param('id'),
           type: 'follow',
           actorId: viewer.id,
-          actorHandle: viewer.handle,
         })
       }
       return c.json(result)
@@ -1098,7 +1093,7 @@ export function createApp() {
       }
       const limit = parseLimit(c.req.query('limit'), 60)
       const cursor = c.req.query('cursor')?.trim() || undefined
-      const { notifications, nextCursor } = await listNotificationsForUser(
+      const { notifications, nextCursor } = await listNotificationsForUserFromDb(
         user.id,
         { limit, cursor },
       )
@@ -1118,7 +1113,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const count = await countUnreadNotifications(user.id)
+      const count = await countUnreadNotificationsFromDb(user.id)
       return c.json({ count })
     } catch (error) {
       console.error(error)
@@ -1135,7 +1130,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      await markNotificationsRead(user.id)
+      await markNotificationsReadFromDb(user.id)
       return c.json({ ok: true })
     } catch (error) {
       console.error(error)

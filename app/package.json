@@ -11,6 +11,8 @@
     "deploy": "gh-pages -d dist",
     "server": "tsx server/index.ts",
     "client": "vite",
+    "db:schema": "tsx server/applySchema.ts .env",
+    "db:schema:test": "tsx server/applySchema.ts .env.test",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "oxlint",

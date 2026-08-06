@@ -8,6 +8,7 @@ import {
   type Tweet,
   type TweetStore,
 } from '../shared/schemas.ts'
+import { getSql } from './db.ts'
 import { listFollowingIds } from './follows.ts'
 import { DEFAULT_DATA_DIR, mutateJsonFile } from './jsonStore.ts'
 
@@ -118,6 +119,49 @@ export async function getPublicFeed(limit?: number): Promise<Tweet[]> {
   return sliced.map((tweet) => annotateOne(tweet, undefined, tweets))
 }
 
+/** Same as getPublicFeed(), but reads tweets/likes/comments/reactions from Postgres. */
+export async function getPublicFeedFromDb(): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      false as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      null::uuid as "repostOfId",
+      null::text as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      false as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    where t.created_at >= now() - interval '24 hours'
+      and t.repost_of_id is null
+    order by t.created_at desc
+  `
+}
+
 /** Your posts + up to 5 random posts from everyone else (non-expired).
  * Others' reposts only appear if you follow the reposter.
  */
@@ -142,6 +186,78 @@ export async function getFeedForUser(userId: string): Promise<Tweet[]> {
   )
 }
 
+/** Same as getFeedForUser(), but reads tweets/likes/comments/reactions/follows from Postgres.
+ * "5 random others" uses SQL `order by random()` — a different RNG than the JS
+ * shuffle, so it's a uniform random sample, not a literal port of the algorithm.
+ */
+export async function getFeedForUserFromDb(userId: string): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    with live as (
+      select * from tweets where created_at >= now() - interval '24 hours'
+    ),
+    mine as (
+      select * from live where user_id = ${userId}
+    ),
+    others as (
+      select o.* from live o
+      where o.user_id is not null
+        and o.user_id <> ${userId}
+        and (
+          o.repost_of_id is null
+          or exists (
+            select 1 from follows f
+            where f.follower_id = ${userId} and f.following_id = o.user_id
+          )
+        )
+    ),
+    random_others as (
+      select * from others order by random() limit 5
+    ),
+    feed as (
+      select * from mine
+      union all
+      select * from random_others
+    )
+    select
+      f.id,
+      f.body,
+      u.handle,
+      f.user_id as "userId",
+      to_char(f.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = f.id) as likes,
+      exists(select 1 from likes l where l.tweet_id = f.id and l.user_id = ${userId}) as liked,
+      f.image_url as "imageUrl",
+      f.reply_to_id as "replyToId",
+      f.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = f.id) as "repostCount",
+      exists(select 1 from tweets r where r.repost_of_id = f.id and r.user_id = ${userId}) as reposted,
+      coalesce(f.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = f.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = f.id
+      ), '[]') as reactions
+    from feed f
+    join users u on u.id = f.user_id
+    left join tweets ot on ot.id = f.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    order by f.created_at desc
+  `
+}
+
 /** Full timeline for a profile (originals, replies, and reposts). */
 export async function listTweetsByUser(
   profileUserId: string,
@@ -154,6 +270,54 @@ export async function listTweetsByUser(
   return annotateForViewer(mine, viewerId, tweets)
 }
 
+/** Same as listTweetsByUser, but reads tweets/likes/comments/reactions from Postgres. */
+export async function listTweetsByUserFromDb(
+  profileUserId: string,
+  viewerId?: string,
+): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      exists(select 1 from likes l where l.tweet_id = t.id and l.user_id = ${viewerId ?? null}::uuid) as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      t.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      exists(select 1 from tweets r where r.repost_of_id = t.id and r.user_id = ${viewerId ?? null}::uuid) as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    left join tweets ot on ot.id = t.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    where t.user_id = ${profileUserId}
+      and t.created_at >= now() - interval '24 hours'
+    order by t.created_at desc
+  `
+}
+
 /** Tweets liked by this profile user (any author). */
 export async function listTweetsLikedByUser(
   profileUserId: string,
@@ -164,6 +328,54 @@ export async function listTweetsLikedByUser(
     .filter((tweet) => likedByOf(tweet).includes(profileUserId))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
   return annotateForViewer(liked, viewerId, tweets)
+}
+
+/** Same as listTweetsLikedByUser, but reads tweets/likes/comments/reactions from Postgres. */
+export async function listTweetsLikedByUserFromDb(
+  profileUserId: string,
+  viewerId?: string,
+): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      exists(select 1 from likes l where l.tweet_id = t.id and l.user_id = ${viewerId ?? null}::uuid) as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      t.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      exists(select 1 from tweets r where r.repost_of_id = t.id and r.user_id = ${viewerId ?? null}::uuid) as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    join likes pl on pl.tweet_id = t.id and pl.user_id = ${profileUserId}
+    left join tweets ot on ot.id = t.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    where t.created_at >= now() - interval '24 hours'
+    order by t.created_at desc
+  `
 }
 
 /** Profile replies: (a) tweets authored by user with replyToId set, PLUS
@@ -212,6 +424,86 @@ export async function listRepliesByUser(
     (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
   )
   return annotateForViewer(combined, viewerId, tweets)
+}
+
+/** Same as listRepliesByUser, but reads tweets/comments/likes/reactions from Postgres.
+ * Union of (a) real reply-tweets authored by the profile and (b) the profile's
+ * comments on other tweets, projected as zeroed-out pseudo-tweets — comments
+ * can't be liked/reacted/commented-on themselves in this app's data model.
+ */
+export async function listRepliesByUserFromDb(
+  profileUserId: string,
+  viewerId?: string,
+): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    (
+      select
+        t.id,
+        t.body,
+        u.handle,
+        t.user_id as "userId",
+        to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+        (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+        exists(select 1 from likes l where l.tweet_id = t.id and l.user_id = ${viewerId ?? null}::uuid) as liked,
+        t.image_url as "imageUrl",
+        t.reply_to_id as "replyToId",
+        t.repost_of_id as "repostOfId",
+        ru.handle as "repostOfHandle",
+        (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+        exists(select 1 from tweets r where r.repost_of_id = t.id and r.user_id = ${viewerId ?? null}::uuid) as reposted,
+        coalesce(t.tags, '{}') as tags,
+        coalesce((
+          select json_agg(json_build_object(
+            'id', c.id,
+            'body', c.body,
+            'handle', cu.handle,
+            'userId', c.user_id,
+            'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+          ) order by c.created_at)
+          from comments c join users cu on cu.id = c.user_id
+          where c.tweet_id = t.id
+        ), '[]') as comments,
+        coalesce((
+          select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+          from reactions r
+          where r.tweet_id = t.id
+        ), '[]') as reactions
+      from tweets t
+      join users u on u.id = t.user_id
+      left join tweets ot on ot.id = t.repost_of_id
+      left join users ru on ru.id = ot.user_id
+      where t.user_id = ${profileUserId}
+        and t.reply_to_id is not null
+        and t.created_at >= now() - interval '24 hours'
+    )
+    union all
+    (
+      select
+        c.id,
+        c.body,
+        cu.handle,
+        c.user_id as "userId",
+        to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+        0 as likes,
+        false as liked,
+        null::text as "imageUrl",
+        pt.id as "replyToId",
+        null::uuid as "repostOfId",
+        null::text as "repostOfHandle",
+        0 as "repostCount",
+        false as reposted,
+        '{}'::text[] as tags,
+        '[]'::json as comments,
+        '[]'::json as reactions
+      from comments c
+      join users cu on cu.id = c.user_id
+      join tweets pt on pt.id = c.tweet_id
+      where c.user_id = ${profileUserId}
+        and pt.created_at >= now() - interval '24 hours'
+    )
+    order by "createdAt" desc
+  `
 }
 
 export async function searchTweets(query: string): Promise<Tweet[]> {

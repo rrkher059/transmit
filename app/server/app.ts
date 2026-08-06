@@ -32,8 +32,8 @@ import { enforceRateLimit } from './rateLimit.ts'
 import { toggleBlock } from './blocks.ts'
 import {
   getFollowStatsFromDb,
-  listFollowers,
-  listFollowing,
+  listFollowersFromDb,
+  listFollowingFromDb,
   toggleFollow,
 } from './follows.ts'
 import {
@@ -53,13 +53,14 @@ import {
   createTweet,
   deleteTweet,
   getFeedForUser,
-  getPublicFeed,
+  getFeedForUserFromDb,
+  getPublicFeedFromDb,
   getTrendingTopics,
   likeTweet,
   listLiveTweets,
-  listRepliesByUser,
-  listTweetsByUser,
-  listTweetsLikedByUser,
+  listRepliesByUserFromDb,
+  listTweetsByUserFromDb,
+  listTweetsLikedByUserFromDb,
   commentOnTweet,
   reactToTweet,
   repostTweet,
@@ -592,8 +593,8 @@ export function createApp() {
       const limit = parseLimit(c.req.query('limit'), 40)
       const cursor = c.req.query('cursor')?.trim() || undefined
       const tweets: Tweet[] = user
-        ? await getFeedForUser(user.id)
-        : await getPublicFeed()
+        ? await getFeedForUserFromDb(user.id)
+        : await getPublicFeedFromDb()
       const { page, nextCursor } = paginateByCursor(tweets, limit, cursor)
       return c.json({ tweets: page, nextCursor })
     } catch (error) {
@@ -968,7 +969,7 @@ export function createApp() {
   app.get('/api/users/:id/tweets', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listTweetsByUser(c.req.param('id'), viewer?.id)
+      const tweets = await listTweetsByUserFromDb(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -979,7 +980,7 @@ export function createApp() {
   app.get('/api/users/:id/likes', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listTweetsLikedByUser(c.req.param('id'), viewer?.id)
+      const tweets = await listTweetsLikedByUserFromDb(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -990,7 +991,7 @@ export function createApp() {
   app.get('/api/users/:id/replies', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listRepliesByUser(c.req.param('id'), viewer?.id)
+      const tweets = await listRepliesByUserFromDb(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -1016,7 +1017,7 @@ export function createApp() {
       if (!viewer) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const users = await listFollowers(c.req.param('id'))
+      const users = await listFollowersFromDb(c.req.param('id'))
       return c.json({ users })
     } catch (error) {
       console.error(error)
@@ -1030,7 +1031,7 @@ export function createApp() {
       if (!viewer) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const users = await listFollowing(c.req.param('id'))
+      const users = await listFollowingFromDb(c.req.param('id'))
       return c.json({ users })
     } catch (error) {
       console.error(error)

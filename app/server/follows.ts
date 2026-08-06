@@ -113,6 +113,40 @@ export async function listFollowing(
   return users
 }
 
+/** Same as listFollowers, but reads the Postgres follows table instead of follows.json. */
+export async function listFollowersFromDb(
+  profileUserId: string,
+): Promise<PublicUser[]> {
+  const sql = getSql()
+  return sql<PublicUser[]>`
+    select
+      u.id,
+      u.handle,
+      to_char(u.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from follows f
+    join users u on u.id = f.follower_id
+    where f.following_id = ${profileUserId}
+    order by f.created_at asc
+  `
+}
+
+/** Same as listFollowing, but reads the Postgres follows table instead of follows.json. */
+export async function listFollowingFromDb(
+  profileUserId: string,
+): Promise<PublicUser[]> {
+  const sql = getSql()
+  return sql<PublicUser[]>`
+    select
+      u.id,
+      u.handle,
+      to_char(u.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from follows f
+    join users u on u.id = f.following_id
+    where f.follower_id = ${profileUserId}
+    order by f.created_at asc
+  `
+}
+
 /** IDs the given user follows (for feed visibility checks). */
 export async function listFollowingIds(
   profileUserId: string,

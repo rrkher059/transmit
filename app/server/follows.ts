@@ -6,7 +6,7 @@ import {
   mutateJsonFile,
   readJsonFile,
 } from './jsonStore.ts'
-import { getPublicUser } from './users.ts'
+import { getPublicUser, getPublicUserFromDb } from './users.ts'
 import type { PublicUser } from '../shared/schemas.ts'
 
 const followEdgeSchema = z.object({
@@ -177,7 +177,7 @@ export async function toggleFollow(
     throw error
   }
 
-  const target = await getPublicUser(followingId)
+  const target = await getPublicUserFromDb(followingId)
   if (!target) {
     const error = new Error('User not found.')
     ;(error as Error & { status: number; code: string }).status = 404

@@ -1,6 +1,6 @@
 import path from 'node:path'
 import dotenv from 'dotenv'
-import { beforeAll } from 'vitest'
+import { beforeEach } from 'vitest'
 import { getSql } from './db.ts'
 
 // Registered as a vitest `setupFile` for the "server" project only (see
@@ -26,7 +26,7 @@ function supabaseProjectRef(databaseUrl: string): string | null {
 /**
  * Refuses to run if DATABASE_URL resolves to the same Supabase project as
  * PRODUCTION_PROJECT_REF — the rest of this file truncates every table
- * before each test file, so pointing it at production, even by accident,
+ * before each test, so pointing it at production, even by accident,
  * would be destructive. Fails CLOSED: an unset PRODUCTION_PROJECT_REF or an
  * unparseable DATABASE_URL blocks the run instead of silently skipping the
  * check — a guard that can't verify anything shouldn't wave it through.
@@ -57,14 +57,14 @@ function assertNotProductionDatabase(): void {
   if (testRef === prodRef) {
     throw new Error(
       `DATABASE_URL points at the production Supabase project (${prodRef}). ` +
-        'Refusing to run — this test suite truncates every table before each file.',
+        'Refusing to run — this test suite truncates every table before each test.',
     )
   }
 }
 
 assertNotProductionDatabase()
 
-beforeAll(async () => {
+beforeEach(async () => {
   const sql = getSql()
   await sql`
     truncate table

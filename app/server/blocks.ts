@@ -5,7 +5,7 @@ import {
   mutateJsonFile,
   readJsonFile,
 } from './jsonStore.ts'
-import { getPublicUser } from './users.ts'
+import { getPublicUserFromDb } from './users.ts'
 
 const blockEdgeSchema = z.object({
   blockerId: z.string().uuid(),
@@ -74,7 +74,7 @@ export async function toggleBlock(
     throw error
   }
 
-  const target = await getPublicUser(blockedId)
+  const target = await getPublicUserFromDb(blockedId)
   if (!target) {
     const error = new Error('User not found.')
     ;(error as Error & { status: number; code: string }).status = 404

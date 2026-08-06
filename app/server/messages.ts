@@ -7,7 +7,7 @@ import {
   readJsonFile,
 } from './jsonStore.ts'
 import { isBlockedEitherWay, listBlockedPeerIds } from './blocks.ts'
-import { getPublicUser } from './users.ts'
+import { getPublicUserFromDb } from './users.ts'
 import type { PublicUser } from '../shared/schemas.ts'
 
 const dmMessageSchema = z.object({
@@ -79,7 +79,7 @@ export async function listConversations(
 
   const conversations: DmConversation[] = []
   for (const [peerId, messages] of byPeer) {
-    const peer = await getPublicUser(peerId)
+    const peer = await getPublicUserFromDb(peerId)
     if (!peer) continue
     const last = messages[messages.length - 1]
     conversations.push({
@@ -102,7 +102,7 @@ export async function getThread(
     return null
   }
 
-  const peer = await getPublicUser(peerId)
+  const peer = await getPublicUserFromDb(peerId)
   if (!peer) return null
 
   const store = await readStore()
@@ -149,7 +149,7 @@ export async function sendMessage(input: {
     throw error
   }
 
-  const peer = await getPublicUser(input.toUserId)
+  const peer = await getPublicUserFromDb(input.toUserId)
   if (!peer) {
     const error = new Error('Recipient not found.')
     ;(error as Error & { status: number; code: string }).status = 404

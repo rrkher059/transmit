@@ -30,8 +30,8 @@ create table if not exists tweets (
   user_id      uuid not null references users(id),
   body         text not null default '',
   image_url    text,
-  reply_to_id  uuid references tweets(id),
-  repost_of_id uuid references tweets(id),
+  reply_to_id  uuid references tweets(id) on delete set null,
+  repost_of_id uuid references tweets(id) on delete cascade,
   tags         text[] not null default '{}',
   created_at   timestamptz not null default now()
 );
@@ -41,7 +41,7 @@ create index if not exists tweets_repost_of_id_idx on tweets (repost_of_id);
 create index if not exists tweets_created_at_idx on tweets (created_at);
 
 create table if not exists likes (
-  tweet_id   uuid not null references tweets(id),
+  tweet_id   uuid not null references tweets(id) on delete cascade,
   user_id    uuid not null references users(id),
   created_at timestamptz not null default now(),
   primary key (tweet_id, user_id)
@@ -51,7 +51,7 @@ create index if not exists likes_user_id_idx on likes (user_id);
 
 create table if not exists comments (
   id         uuid primary key,
-  tweet_id   uuid not null references tweets(id),
+  tweet_id   uuid not null references tweets(id) on delete cascade,
   user_id    uuid not null references users(id),
   body       text not null,
   created_at timestamptz not null default now()
@@ -61,7 +61,7 @@ create index if not exists comments_tweet_id_idx on comments (tweet_id);
 create index if not exists comments_user_id_idx on comments (user_id);
 
 create table if not exists reactions (
-  tweet_id   uuid not null references tweets(id),
+  tweet_id   uuid not null references tweets(id) on delete cascade,
   user_id    uuid not null references users(id),
   emoji      text not null,
   created_at timestamptz not null default now(),
@@ -93,10 +93,37 @@ create table if not exists notifications (
   recipient_id uuid not null references users(id),
   type       text not null check (type in ('like', 'comment', 'repost', 'reaction', 'follow')),
   actor_id   uuid not null references users(id),
-  tweet_id   uuid references tweets(id),
+  tweet_id   uuid references tweets(id) on delete set null,
   body       text,
   created_at timestamptz not null default now(),
   read       boolean not null default false
 );
 
 create index if not exists notifications_recipient_id_idx on notifications (recipient_id);
+
+-- The tables above already existed (created before these ON DELETE actions
+-- were added), so `create table if not exists` won't retroactively apply
+-- them. Idempotent ALTER pass for already-provisioned databases.
+alter table likes drop constraint if exists likes_tweet_id_fkey;
+alter table likes add constraint likes_tweet_id_fkey
+  foreign key (tweet_id) references tweets(id) on delete cascade;
+
+alter table comments drop constraint if exists comments_tweet_id_fkey;
+alter table comments add constraint comments_tweet_id_fkey
+  foreign key (tweet_id) references tweets(id) on delete cascade;
+
+alter table reactions drop constraint if exists reactions_tweet_id_fkey;
+alter table reactions add constraint reactions_tweet_id_fkey
+  foreign key (tweet_id) references tweets(id) on delete cascade;
+
+alter table tweets drop constraint if exists tweets_repost_of_id_fkey;
+alter table tweets add constraint tweets_repost_of_id_fkey
+  foreign key (repost_of_id) references tweets(id) on delete cascade;
+
+alter table tweets drop constraint if exists tweets_reply_to_id_fkey;
+alter table tweets add constraint tweets_reply_to_id_fkey
+  foreign key (reply_to_id) references tweets(id) on delete set null;
+
+alter table notifications drop constraint if exists notifications_tweet_id_fkey;
+alter table notifications add constraint notifications_tweet_id_fkey
+  foreign key (tweet_id) references tweets(id) on delete set null;

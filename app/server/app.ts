@@ -50,20 +50,20 @@ import {
   verifySession,
 } from './session.ts'
 import {
-  createTweet,
-  deleteTweet,
+  createTweetFromDb,
+  deleteTweetFromDb,
   getFeedForUser,
   getFeedForUserFromDb,
   getPublicFeedFromDb,
   getTrendingTopics,
-  likeTweet,
+  likeTweetFromDb,
   listLiveTweets,
   listRepliesByUserFromDb,
   listTweetsByUserFromDb,
   listTweetsLikedByUserFromDb,
-  commentOnTweet,
-  reactToTweet,
-  repostTweet,
+  commentOnTweetFromDb,
+  reactToTweetFromDb,
+  repostTweetFromDb,
   searchTweets,
 } from './store.ts'
 import {
@@ -73,9 +73,9 @@ import {
   pushNotification,
 } from './notifications.ts'
 import {
-  authenticateUser,
-  createUser,
-  getPrivateUser,
+  authenticateUserFromDb,
+  createUserFromDb,
+  getPrivateUserFromDb,
   listPublicUsers,
   searchUsers,
 } from './users.ts'
@@ -106,7 +106,7 @@ async function currentUser(c: Context): Promise<PrivateUser | null> {
   const token = getCookie(c, SESSION_COOKIE)
   const session = verifySession(token)
   if (!session) return null
-  return getPrivateUser(session.userId)
+  return getPrivateUserFromDb(session.userId)
 }
 
 function trustProxy(): boolean {
@@ -296,7 +296,7 @@ export function createApp() {
       const json = await c.req.json()
       const payload = signupSchema.parse(json)
 
-      const user = await createUser({
+      const user = await createUserFromDb({
         email: payload.email,
         handle: payload.handle,
         password: payload.password,
@@ -350,7 +350,7 @@ export function createApp() {
       )
       if (emailLimited) return emailLimited
 
-      const user = await authenticateUser(payload.email, payload.password)
+      const user = await authenticateUserFromDb(payload.email, payload.password)
 
       if (!user) {
         return c.json(
@@ -634,9 +634,8 @@ export function createApp() {
         ? await generateTags(payload.body)
         : []
 
-      const tweet = await createTweet({
+      const tweet = await createTweetFromDb({
         body: payload.body,
-        handle: user.handle,
         userId: user.id,
         imageUrl: payload.imageUrl,
         replyToId: payload.replyToId,
@@ -671,7 +670,7 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const { tweetId } = likeTweetSchema.parse({ tweetId: c.req.param('id') })
-      const { tweet, justLiked, ownerId } = await likeTweet(tweetId, user.id)
+      const { tweet, justLiked, ownerId } = await likeTweetFromDb(tweetId, user.id)
       if (justLiked && ownerId) {
         await pushNotification({
           recipientId: ownerId,
@@ -709,10 +708,9 @@ export function createApp() {
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
       const { body } = commentTweetSchema.parse(await c.req.json())
-      const { tweet, ownerId } = await commentOnTweet({
+      const { tweet, ownerId } = await commentOnTweetFromDb({
         tweetId,
         body,
-        handle: user.handle,
         userId: user.id,
       })
       if (ownerId) {
@@ -754,9 +752,8 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
-      const result = await repostTweet({
+      const result = await repostTweetFromDb({
         tweetId,
-        handle: user.handle,
         userId: user.id,
       })
       if (result.ownerId) {
@@ -803,7 +800,7 @@ export function createApp() {
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
       const json = await c.req.json()
       const { emoji } = reactTweetSchema.parse(json)
-      const { tweet, justAdded, ownerId } = await reactToTweet(
+      const { tweet, justAdded, ownerId } = await reactToTweetFromDb(
         tweetId,
         user.id,
         emoji,
@@ -847,7 +844,7 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
-      await deleteTweet(tweetId, user.id)
+      await deleteTweetFromDb(tweetId, user.id)
       return c.json({ ok: true })
     } catch (error) {
       if (error instanceof ZodError) {

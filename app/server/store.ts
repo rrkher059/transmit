@@ -666,6 +666,79 @@ export async function createTweet(input: {
   })
 }
 
+/** Same as createTweet, but writes to Postgres. No `handle` param — tweets
+ * has no handle column, so the response's handle comes from joining users,
+ * same as every read-side *FromDb function.
+ */
+export async function createTweetFromDb(input: {
+  body: string
+  userId: string
+  imageUrl?: string
+  replyToId?: string
+  tags?: string[]
+}): Promise<Tweet> {
+  const data = createTweetSchema.parse({
+    body: input.body,
+    imageUrl: input.imageUrl,
+    replyToId: input.replyToId,
+  })
+
+  const tags = (input.tags ?? [])
+    .map((tag) =>
+      tag
+        .trim()
+        .toLowerCase()
+        .replace(/^#/, '')
+        .slice(0, 32),
+    )
+    .filter(Boolean)
+    .slice(0, 4)
+
+  const sql = getSql()
+
+  if (data.replyToId) {
+    const [parent] = await sql`
+      select exists(
+        select 1 from tweets
+        where id = ${data.replyToId}
+          and created_at >= now() - interval '24 hours'
+      ) as "exists"
+    `
+    if (!parent.exists) throw httpError('Parent post not found.', 404)
+  }
+
+  const [row] = await sql<Tweet[]>`
+    with inserted as (
+      insert into tweets (id, user_id, body, image_url, reply_to_id, tags)
+      values (
+        ${randomUUID()}, ${input.userId}, ${data.body},
+        ${data.imageUrl ?? null}, ${data.replyToId ?? null}, ${tags}
+      )
+      returning id, user_id, body, image_url, reply_to_id, repost_of_id, tags, created_at
+    )
+    select
+      inserted.id,
+      inserted.body,
+      u.handle,
+      inserted.user_id as "userId",
+      to_char(inserted.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      0 as likes,
+      false as liked,
+      inserted.image_url as "imageUrl",
+      inserted.reply_to_id as "replyToId",
+      inserted.repost_of_id as "repostOfId",
+      null::text as "repostOfHandle",
+      0 as "repostCount",
+      false as reposted,
+      coalesce(inserted.tags, '{}') as tags,
+      '[]'::json as comments,
+      '[]'::json as reactions
+    from inserted
+    join users u on u.id = inserted.user_id
+  `
+  return row
+}
+
 export async function commentOnTweet(input: {
   tweetId: string
   body: string
@@ -711,6 +784,81 @@ export async function commentOnTweet(input: {
       },
     }
   })
+}
+
+/** Fetch one tweet in full response shape (handle joined, counts/viewer
+ * flags computed live) — shared by every Postgres mutation below so they
+ * don't each re-derive the same read after writing.
+ */
+async function fetchTweetForViewer(
+  sql: ReturnType<typeof getSql>,
+  tweetId: string,
+  viewerId: string,
+): Promise<Tweet> {
+  const [row] = await sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      exists(select 1 from likes l where l.tweet_id = t.id and l.user_id = ${viewerId}::uuid) as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      t.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      exists(select 1 from tweets r where r.repost_of_id = t.id and r.user_id = ${viewerId}::uuid) as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    left join tweets ot on ot.id = t.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    where t.id = ${tweetId}
+  `
+  return row
+}
+
+/** Same as commentOnTweet, but writes to Postgres. No `handle` param —
+ * joined from users on read, same as every other *FromDb function.
+ */
+export async function commentOnTweetFromDb(input: {
+  tweetId: string
+  body: string
+  userId: string
+}): Promise<{ tweet: Tweet; ownerId?: string }> {
+  const sql = getSql()
+
+  const [parent] = await sql<{ user_id: string }[]>`
+    select user_id from tweets
+    where id = ${input.tweetId} and created_at >= now() - interval '24 hours'
+  `
+  if (!parent) throw httpError('Tweet not found.', 404)
+
+  await sql`
+    insert into comments (id, tweet_id, user_id, body)
+    values (${randomUUID()}, ${input.tweetId}, ${input.userId}, ${input.body.trim()})
+  `
+
+  const tweet = await fetchTweetForViewer(sql, input.tweetId, input.userId)
+  return { tweet, ownerId: parent.user_id }
 }
 
 /** Create a repost entry attributed to the current user. */
@@ -797,6 +945,68 @@ export async function repostTweet(input: {
   })
 }
 
+/** Same as repostTweet, but writes to Postgres. Preserves the JSON version's
+ * redirect-to-root-with-fallback: reposting a repost attributes to the root
+ * post, UNLESS the root has since expired, in which case it falls back to
+ * reposting the (still-live) repost row itself rather than erroring.
+ */
+export async function repostTweetFromDb(input: {
+  tweetId: string
+  userId: string
+}): Promise<{ original: Tweet; repost: Tweet; ownerId?: string }> {
+  const sql = getSql()
+
+  type TargetRow = {
+    id: string
+    user_id: string
+    body: string
+    image_url: string | null
+    tags: string[]
+  }
+
+  const [requested] = await sql<
+    (TargetRow & { repost_of_id: string | null })[]
+  >`
+    select id, user_id, repost_of_id, body, image_url, tags
+    from tweets
+    where id = ${input.tweetId} and created_at >= now() - interval '24 hours'
+  `
+  if (!requested) throw httpError('Tweet not found.', 404)
+
+  let target: TargetRow = requested
+  if (requested.repost_of_id) {
+    const [root] = await sql<TargetRow[]>`
+      select id, user_id, body, image_url, tags
+      from tweets
+      where id = ${requested.repost_of_id} and created_at >= now() - interval '24 hours'
+    `
+    if (root) target = root
+  }
+
+  const [already] = await sql<{ exists: boolean }[]>`
+    select exists(
+      select 1 from tweets
+      where user_id = ${input.userId} and repost_of_id = ${target.id}
+    ) as "exists"
+  `
+  if (already.exists) {
+    throw httpError('Already reposted.', 409, 'ALREADY_REPOSTED')
+  }
+
+  const repostId = randomUUID()
+  await sql`
+    insert into tweets (id, user_id, body, image_url, reply_to_id, repost_of_id, tags)
+    values (
+      ${repostId}, ${input.userId}, ${target.body}, ${target.image_url},
+      null, ${target.id}, ${target.tags}
+    )
+  `
+
+  const original = await fetchTweetForViewer(sql, target.id, input.userId)
+  const repost = await fetchTweetForViewer(sql, repostId, input.userId)
+  return { original, repost, ownerId: target.user_id }
+}
+
 /** Toggle like for this viewer via likedBy ledger. */
 export async function likeTweet(
   tweetId: string,
@@ -850,6 +1060,36 @@ export async function likeTweet(
   })
 }
 
+/** Same as likeTweet, but writes to Postgres — toggle via delete-then-maybe-
+ * insert instead of a separate EXISTS check first.
+ */
+export async function likeTweetFromDb(
+  tweetId: string,
+  viewerId: string,
+): Promise<{ tweet: Tweet; justLiked: boolean; ownerId?: string }> {
+  const sql = getSql()
+
+  const [row] = await sql<{ user_id: string }[]>`
+    select user_id from tweets
+    where id = ${tweetId} and created_at >= now() - interval '24 hours'
+  `
+  if (!row) throw httpError('Tweet not found.', 404)
+
+  const deleted = await sql`
+    delete from likes where tweet_id = ${tweetId} and user_id = ${viewerId}
+  `
+  let justLiked: boolean
+  if (deleted.count > 0) {
+    justLiked = false
+  } else {
+    await sql`insert into likes (tweet_id, user_id) values (${tweetId}, ${viewerId})`
+    justLiked = true
+  }
+
+  const tweet = await fetchTweetForViewer(sql, tweetId, viewerId)
+  return { tweet, justLiked, ownerId: row.user_id }
+}
+
 export async function deleteTweet(
   tweetId: string,
   userId: string,
@@ -886,6 +1126,29 @@ export async function deleteTweet(
 
     return { store: { tweets: next }, result: undefined }
   })
+}
+
+/** Same as deleteTweet, but writes to Postgres. Simpler than the JSON
+ * version's manual orphan-cleanup: schema.sql's ON DELETE CASCADE on
+ * repost_of_id (and SET NULL on reply_to_id, likes/comments/reactions all
+ * CASCADE) means dropping the row does that work declaratively.
+ */
+export async function deleteTweetFromDb(
+  tweetId: string,
+  userId: string,
+): Promise<void> {
+  const sql = getSql()
+
+  const [row] = await sql<{ user_id: string }[]>`
+    select user_id from tweets
+    where id = ${tweetId} and created_at >= now() - interval '24 hours'
+  `
+  if (!row) throw httpError('Tweet not found.', 404)
+  if (row.user_id !== userId) {
+    throw httpError('You can only delete your own posts.', 403, 'FORBIDDEN')
+  }
+
+  await sql`delete from tweets where id = ${tweetId}`
 }
 
 /** Toggle an emoji reaction for this user (add if missing, remove if present). */
@@ -948,4 +1211,44 @@ export async function reactToTweet(
       },
     }
   })
+}
+
+/** Same as reactToTweet, but writes to Postgres. Same delete-then-maybe-
+ * insert toggle as likeTweetFromDb, keyed on (tweet_id, user_id, emoji).
+ */
+export async function reactToTweetFromDb(
+  tweetId: string,
+  userId: string,
+  emojiRaw: string,
+): Promise<{
+  tweet: Tweet
+  justAdded: boolean
+  ownerId?: string
+  emoji: string
+}> {
+  const { emoji } = reactTweetSchema.parse({ emoji: emojiRaw })
+  const sql = getSql()
+
+  const [row] = await sql<{ user_id: string }[]>`
+    select user_id from tweets
+    where id = ${tweetId} and created_at >= now() - interval '24 hours'
+  `
+  if (!row) throw httpError('Tweet not found.', 404)
+
+  const deleted = await sql`
+    delete from reactions
+    where tweet_id = ${tweetId} and user_id = ${userId} and emoji = ${emoji}
+  `
+  let justAdded: boolean
+  if (deleted.count > 0) {
+    justAdded = false
+  } else {
+    await sql`
+      insert into reactions (tweet_id, user_id, emoji) values (${tweetId}, ${userId}, ${emoji})
+    `
+    justAdded = true
+  }
+
+  const tweet = await fetchTweetForViewer(sql, tweetId, userId)
+  return { tweet, justAdded, ownerId: row.user_id, emoji }
 }

@@ -249,10 +249,6 @@ export const aiSearchSchema = z.object({
     .max(200, { message: 'Query must be at most 200 characters.' }),
 })
 
-export const tweetStoreSchema = z.object({
-  tweets: z.array(tweetSchema),
-})
-
 /** Safe for explore / followers / search — never includes email. */
 export const publicUserSchema = z.object({
   id: z.string().uuid(),
@@ -263,14 +259,6 @@ export const publicUserSchema = z.object({
 /** Self-only responses (me / login / signup). */
 export const privateUserSchema = publicUserSchema.extend({
   email: emailSchema,
-})
-
-export const userRecordSchema = privateUserSchema.extend({
-  passwordHash: z.string().min(1),
-})
-
-export const userStoreSchema = z.object({
-  users: z.array(userRecordSchema),
 })
 
 export type SignupInput = z.infer<typeof signupSchema>
@@ -286,11 +274,8 @@ export type AiSearchInput = z.infer<typeof aiSearchSchema>
 export type Reaction = z.infer<typeof reactionSchema>
 export type Comment = z.infer<typeof commentSchema>
 export type Tweet = z.infer<typeof tweetSchema>
-export type TweetStore = z.infer<typeof tweetStoreSchema>
 export type PublicUser = z.infer<typeof publicUserSchema>
 export type PrivateUser = z.infer<typeof privateUserSchema>
-export type UserRecord = z.infer<typeof userRecordSchema>
-export type UserStore = z.infer<typeof userStoreSchema>
 
 export type ApiErrorBody = {
   error: {

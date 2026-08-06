@@ -29,17 +29,17 @@ import {
   semanticSearchTweets,
 } from './ai.ts'
 import { enforceRateLimit } from './rateLimit.ts'
-import { toggleBlockFromDb } from './blocks.ts'
+import { toggleBlock } from './blocks.ts'
 import {
-  getFollowStatsFromDb,
-  listFollowersFromDb,
-  listFollowingFromDb,
-  toggleFollowFromDb,
+  getFollowStats,
+  listFollowers,
+  listFollowing,
+  toggleFollow,
 } from './follows.ts'
 import {
-  getThreadFromDb,
-  listConversationsFromDb,
-  sendMessageFromDb,
+  getThread,
+  listConversations,
+  sendMessage,
 } from './messages.ts'
 import { getPlatformStats } from './stats.ts'
 import {
@@ -50,34 +50,33 @@ import {
   verifySession,
 } from './session.ts'
 import {
-  createTweetFromDb,
-  deleteTweetFromDb,
+  createTweet,
+  deleteTweet,
   getFeedForUser,
-  getFeedForUserFromDb,
-  getPublicFeedFromDb,
+  getPublicFeed,
   getTrendingTopics,
-  likeTweetFromDb,
+  likeTweet,
   listLiveTweets,
-  listRepliesByUserFromDb,
-  listTweetsByUserFromDb,
-  listTweetsLikedByUserFromDb,
-  commentOnTweetFromDb,
-  reactToTweetFromDb,
-  repostTweetFromDb,
+  listRepliesByUser,
+  listTweetsByUser,
+  listTweetsLikedByUser,
+  commentOnTweet,
+  reactToTweet,
+  repostTweet,
   searchTweets,
 } from './store.ts'
 import {
-  countUnreadNotificationsFromDb,
-  listNotificationsForUserFromDb,
-  markNotificationsReadFromDb,
-  pushNotificationFromDb,
+  countUnreadNotifications,
+  listNotificationsForUser,
+  markNotificationsRead,
+  pushNotification,
 } from './notifications.ts'
 import {
-  authenticateUserFromDb,
-  createUserFromDb,
-  getPrivateUserFromDb,
-  listPublicUsersFromDb,
-  searchUsersFromDb,
+  authenticateUser,
+  createUser,
+  getPrivateUser,
+  listPublicUsers,
+  searchUsers,
 } from './users.ts'
 
 type AppVariables = {
@@ -106,7 +105,7 @@ async function currentUser(c: Context): Promise<PrivateUser | null> {
   const token = getCookie(c, SESSION_COOKIE)
   const session = verifySession(token)
   if (!session) return null
-  return getPrivateUserFromDb(session.userId)
+  return getPrivateUser(session.userId)
 }
 
 function trustProxy(): boolean {
@@ -296,7 +295,7 @@ export function createApp() {
       const json = await c.req.json()
       const payload = signupSchema.parse(json)
 
-      const user = await createUserFromDb({
+      const user = await createUser({
         email: payload.email,
         handle: payload.handle,
         password: payload.password,
@@ -350,7 +349,7 @@ export function createApp() {
       )
       if (emailLimited) return emailLimited
 
-      const user = await authenticateUserFromDb(payload.email, payload.password)
+      const user = await authenticateUser(payload.email, payload.password)
 
       if (!user) {
         return c.json(
@@ -405,7 +404,7 @@ export function createApp() {
         ? await semanticSearchTweets(q, await listLiveTweets())
         : await searchTweets(q)
       // Guests can search tweets; user discovery requires auth.
-      const users = user ? await searchUsersFromDb(q, user.id) : []
+      const users = user ? await searchUsers(q, user.id) : []
       const visible = user
         ? tweets
         : tweets.filter((tweet) => !tweet.repostOfId)
@@ -576,7 +575,7 @@ export function createApp() {
           401,
         )
       }
-      const users = await listPublicUsersFromDb(user.id, 5)
+      const users = await listPublicUsers(user.id, 5)
       return c.json({ users })
     } catch (error) {
       console.error(error)
@@ -593,8 +592,8 @@ export function createApp() {
       const limit = parseLimit(c.req.query('limit'), 40)
       const cursor = c.req.query('cursor')?.trim() || undefined
       const tweets: Tweet[] = user
-        ? await getFeedForUserFromDb(user.id)
-        : await getPublicFeedFromDb()
+        ? await getFeedForUser(user.id)
+        : await getPublicFeed()
       const { page, nextCursor } = paginateByCursor(tweets, limit, cursor)
       return c.json({ tweets: page, nextCursor })
     } catch (error) {
@@ -634,7 +633,7 @@ export function createApp() {
         ? await generateTags(payload.body)
         : []
 
-      const tweet = await createTweetFromDb({
+      const tweet = await createTweet({
         body: payload.body,
         userId: user.id,
         imageUrl: payload.imageUrl,
@@ -670,9 +669,9 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const { tweetId } = likeTweetSchema.parse({ tweetId: c.req.param('id') })
-      const { tweet, justLiked, ownerId } = await likeTweetFromDb(tweetId, user.id)
+      const { tweet, justLiked, ownerId } = await likeTweet(tweetId, user.id)
       if (justLiked && ownerId) {
-        await pushNotificationFromDb({
+        await pushNotification({
           recipientId: ownerId,
           type: 'like',
           actorId: user.id,
@@ -707,13 +706,13 @@ export function createApp() {
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
       const { body } = commentTweetSchema.parse(await c.req.json())
-      const { tweet, ownerId } = await commentOnTweetFromDb({
+      const { tweet, ownerId } = await commentOnTweet({
         tweetId,
         body,
         userId: user.id,
       })
       if (ownerId) {
-        await pushNotificationFromDb({
+        await pushNotification({
           recipientId: ownerId,
           type: 'comment',
           actorId: user.id,
@@ -750,12 +749,12 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
-      const result = await repostTweetFromDb({
+      const result = await repostTweet({
         tweetId,
         userId: user.id,
       })
       if (result.ownerId) {
-        await pushNotificationFromDb({
+        await pushNotification({
           recipientId: result.ownerId,
           type: 'repost',
           actorId: user.id,
@@ -797,13 +796,13 @@ export function createApp() {
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
       const json = await c.req.json()
       const { emoji } = reactTweetSchema.parse(json)
-      const { tweet, justAdded, ownerId } = await reactToTweetFromDb(
+      const { tweet, justAdded, ownerId } = await reactToTweet(
         tweetId,
         user.id,
         emoji,
       )
       if (justAdded && ownerId) {
-        await pushNotificationFromDb({
+        await pushNotification({
           recipientId: ownerId,
           type: 'reaction',
           actorId: user.id,
@@ -840,7 +839,7 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const tweetId = likeTweetSchema.parse({ tweetId: c.req.param('id') }).tweetId
-      await deleteTweetFromDb(tweetId, user.id)
+      await deleteTweet(tweetId, user.id)
       return c.json({ ok: true })
     } catch (error) {
       if (error instanceof ZodError) {
@@ -866,7 +865,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in to view messages.'), 401)
       }
-      const conversations = await listConversationsFromDb(user.id)
+      const conversations = await listConversations(user.id)
       return c.json({ conversations })
     } catch (error) {
       console.error(error)
@@ -884,7 +883,7 @@ export function createApp() {
         .string()
         .uuid({ message: 'Invalid peer id.' })
         .parse(c.req.param('peerId'))
-      const thread = await getThreadFromDb(user.id, peerId)
+      const thread = await getThread(user.id, peerId)
       if (!thread) {
         return c.json(errorBody('NOT_FOUND', 'User not found.'), 404)
       }
@@ -911,7 +910,7 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const payload = sendMessageSchema.parse(await c.req.json())
-      const message = await sendMessageFromDb({
+      const message = await sendMessage({
         fromUserId: user.id,
         toUserId: payload.toUserId,
         body: payload.body,
@@ -951,7 +950,7 @@ export function createApp() {
           400,
         )
       }
-      const users = await searchUsersFromDb(q, user.id)
+      const users = await searchUsers(q, user.id)
       return c.json({ users, query: q })
     } catch (error) {
       console.error(error)
@@ -962,7 +961,7 @@ export function createApp() {
   app.get('/api/users/:id/tweets', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listTweetsByUserFromDb(c.req.param('id'), viewer?.id)
+      const tweets = await listTweetsByUser(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -973,7 +972,7 @@ export function createApp() {
   app.get('/api/users/:id/likes', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listTweetsLikedByUserFromDb(c.req.param('id'), viewer?.id)
+      const tweets = await listTweetsLikedByUser(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -984,7 +983,7 @@ export function createApp() {
   app.get('/api/users/:id/replies', async (c) => {
     try {
       const viewer = await currentUser(c)
-      const tweets = await listRepliesByUserFromDb(c.req.param('id'), viewer?.id)
+      const tweets = await listRepliesByUser(c.req.param('id'), viewer?.id)
       return c.json({ tweets })
     } catch (error) {
       console.error(error)
@@ -996,7 +995,7 @@ export function createApp() {
     try {
       const viewer = await currentUser(c)
       const profileId = c.req.param('id')
-      const stats = await getFollowStatsFromDb(profileId, viewer?.id)
+      const stats = await getFollowStats(profileId, viewer?.id)
       return c.json({ stats })
     } catch (error) {
       console.error(error)
@@ -1010,7 +1009,7 @@ export function createApp() {
       if (!viewer) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const users = await listFollowersFromDb(c.req.param('id'))
+      const users = await listFollowers(c.req.param('id'))
       return c.json({ users })
     } catch (error) {
       console.error(error)
@@ -1024,7 +1023,7 @@ export function createApp() {
       if (!viewer) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const users = await listFollowingFromDb(c.req.param('id'))
+      const users = await listFollowing(c.req.param('id'))
       return c.json({ users })
     } catch (error) {
       console.error(error)
@@ -1041,9 +1040,9 @@ export function createApp() {
       const writeLimited = enforceWriteRateLimit(c, viewer.id)
       if (writeLimited) return writeLimited
 
-      const result = await toggleFollowFromDb(viewer.id, c.req.param('id'))
+      const result = await toggleFollow(viewer.id, c.req.param('id'))
       if (result.isFollowing) {
-        await pushNotificationFromDb({
+        await pushNotification({
           recipientId: c.req.param('id'),
           type: 'follow',
           actorId: viewer.id,
@@ -1071,7 +1070,7 @@ export function createApp() {
       const writeLimited = enforceWriteRateLimit(c, viewer.id)
       if (writeLimited) return writeLimited
 
-      const result = await toggleBlockFromDb(viewer.id, c.req.param('id'))
+      const result = await toggleBlock(viewer.id, c.req.param('id'))
       return c.json(result)
     } catch (error) {
       if (statusError(error)) {
@@ -1093,7 +1092,7 @@ export function createApp() {
       }
       const limit = parseLimit(c.req.query('limit'), 60)
       const cursor = c.req.query('cursor')?.trim() || undefined
-      const { notifications, nextCursor } = await listNotificationsForUserFromDb(
+      const { notifications, nextCursor } = await listNotificationsForUser(
         user.id,
         { limit, cursor },
       )
@@ -1113,7 +1112,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      const count = await countUnreadNotificationsFromDb(user.id)
+      const count = await countUnreadNotifications(user.id)
       return c.json({ count })
     } catch (error) {
       console.error(error)
@@ -1130,7 +1129,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in required.'), 401)
       }
-      await markNotificationsReadFromDb(user.id)
+      await markNotificationsRead(user.id)
       return c.json({ ok: true })
     } catch (error) {
       console.error(error)

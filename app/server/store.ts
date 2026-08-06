@@ -1,30 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import path from 'node:path'
-import { TWEET_TTL_MS } from '../shared/constants.ts'
 import {
   createTweetSchema,
   reactTweetSchema,
-  tweetStoreSchema,
   type Tweet,
-  type TweetStore,
 } from '../shared/schemas.ts'
 import { getSql } from './db.ts'
-import { listFollowingIds } from './follows.ts'
-import { DEFAULT_DATA_DIR, mutateJsonFile } from './jsonStore.ts'
-
-function storePath(): string {
-  return (
-    process.env.TWEET_STORE_PATH ?? path.join(DEFAULT_DATA_DIR, 'tweets.json')
-  )
-}
-
-const emptyStore = (): TweetStore => ({ tweets: [] })
-
-function parseStore(raw: unknown): TweetStore {
-  const parsed = tweetStoreSchema.safeParse(raw)
-  if (!parsed.success) throw new Error('Tweet store is corrupt or invalid.')
-  return parsed.data
-}
 
 function httpError(message: string, status: number, code?: string): Error {
   const error = new Error(message)
@@ -33,94 +13,8 @@ function httpError(message: string, status: number, code?: string): Error {
   return error
 }
 
-export function isTweetExpired(tweet: Tweet, now = Date.now()): boolean {
-  const created = Date.parse(tweet.createdAt)
-  if (Number.isNaN(created)) return true
-  return now - created >= TWEET_TTL_MS
-}
-
-function shuffle<T>(items: T[]): T[] {
-  const copy = [...items]
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[copy[i], copy[j]] = [copy[j], copy[i]]
-  }
-  return copy
-}
-
-function likedByOf(tweet: Tweet): string[] {
-  return Array.isArray(tweet.likedBy) ? tweet.likedBy : []
-}
-
-/** Drop posts older than one day and persist if anything changed. */
-export async function purgeExpired(): Promise<Tweet[]> {
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const live = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    if (live.length === store.tweets.length) {
-      return { store, result: live, dirty: false }
-    }
-    return { store: { tweets: live }, result: live }
-  })
-}
-
-export async function readTweets(): Promise<Tweet[]> {
-  return purgeExpired()
-}
-
-function annotateForViewer(
-  tweets: Tweet[],
-  userId: string | undefined,
-  catalog: Tweet[] = tweets,
-): Tweet[] {
-  const myRepostTargets = new Set(
-    userId
-      ? catalog
-          .filter((tweet) => tweet.userId === userId && tweet.repostOfId)
-          .map((tweet) => tweet.repostOfId as string)
-      : [],
-  )
-  return tweets.map((tweet) => {
-    const likedBy = likedByOf(tweet)
-    return {
-      ...tweet,
-      likedBy,
-      likes: likedBy.length,
-      reactions: tweet.reactions ?? [],
-      comments: tweet.comments ?? [],
-      tags: tweet.tags ?? [],
-      imageUrl: tweet.imageUrl ?? null,
-      replyToId: tweet.replyToId ?? null,
-      repostOfId: tweet.repostOfId ?? null,
-      repostOfHandle: tweet.repostOfHandle ?? null,
-      repostCount: tweet.repostCount ?? 0,
-      // Viewer-specific — never trust the persisted flag.
-      liked: userId ? likedBy.includes(userId) : false,
-      reposted: userId ? myRepostTargets.has(tweet.id) : false,
-    }
-  })
-}
-
-function annotateOne(
-  tweet: Tweet,
-  userId: string | undefined,
-  catalog: Tweet[],
-): Tweet {
-  return annotateForViewer([tweet], userId, catalog)[0]
-}
-
 /** Public landing feed — recent originals only (no follower-gated reposts). */
-export async function getPublicFeed(limit?: number): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-  const sorted = tweets
-    .filter((tweet) => !tweet.repostOfId)
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  const sliced = limit == null ? sorted : sorted.slice(0, limit)
-  return sliced.map((tweet) => annotateOne(tweet, undefined, tweets))
-}
-
-/** Same as getPublicFeed(), but reads tweets/likes/comments/reactions from Postgres. */
-export async function getPublicFeedFromDb(): Promise<Tweet[]> {
+export async function getPublicFeed(): Promise<Tweet[]> {
   const sql = getSql()
   return sql<Tweet[]>`
     select
@@ -163,34 +57,10 @@ export async function getPublicFeedFromDb(): Promise<Tweet[]> {
 }
 
 /** Your posts + up to 5 random posts from everyone else (non-expired).
- * Others' reposts only appear if you follow the reposter.
+ * Others' reposts only appear if you follow the reposter. "5 random others"
+ * uses SQL `order by random()` — a uniform random sample.
  */
 export async function getFeedForUser(userId: string): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-  const followingIds = await listFollowingIds(userId)
-  const mine = tweets.filter((tweet) => tweet.userId === userId)
-  const others = tweets.filter((tweet) => {
-    if (!tweet.userId || tweet.userId === userId) return false
-    // Reposts are follower-gated; originals stay in the public random pool.
-    if (tweet.repostOfId) return followingIds.has(tweet.userId)
-    return true
-  })
-  const randomOthers = shuffle(others).slice(0, 5)
-
-  return annotateForViewer(
-    [...mine, ...randomOthers].sort(
-      (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
-    ),
-    userId,
-    tweets,
-  )
-}
-
-/** Same as getFeedForUser(), but reads tweets/likes/comments/reactions/follows from Postgres.
- * "5 random others" uses SQL `order by random()` — a different RNG than the JS
- * shuffle, so it's a uniform random sample, not a literal port of the algorithm.
- */
-export async function getFeedForUserFromDb(userId: string): Promise<Tweet[]> {
   const sql = getSql()
   return sql<Tweet[]>`
     with live as (
@@ -263,18 +133,6 @@ export async function listTweetsByUser(
   profileUserId: string,
   viewerId?: string,
 ): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-  const mine = tweets
-    .filter((tweet) => tweet.userId === profileUserId)
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  return annotateForViewer(mine, viewerId, tweets)
-}
-
-/** Same as listTweetsByUser, but reads tweets/likes/comments/reactions from Postgres. */
-export async function listTweetsByUserFromDb(
-  profileUserId: string,
-  viewerId?: string,
-): Promise<Tweet[]> {
   const sql = getSql()
   return sql<Tweet[]>`
     select
@@ -323,18 +181,6 @@ export async function listTweetsLikedByUser(
   profileUserId: string,
   viewerId?: string,
 ): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-  const liked = tweets
-    .filter((tweet) => likedByOf(tweet).includes(profileUserId))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  return annotateForViewer(liked, viewerId, tweets)
-}
-
-/** Same as listTweetsLikedByUser, but reads tweets/likes/comments/reactions from Postgres. */
-export async function listTweetsLikedByUserFromDb(
-  profileUserId: string,
-  viewerId?: string,
-): Promise<Tweet[]> {
   const sql = getSql()
   return sql<Tweet[]>`
     select
@@ -378,60 +224,12 @@ export async function listTweetsLikedByUserFromDb(
   `
 }
 
-/** Profile replies: (a) tweets authored by user with replyToId set, PLUS
- *  (b) nested comments authored by user, projected as Tweet-shaped items
- *  with id=comment.id, body/handle/userId/createdAt from comment,
- *  replyToId=parentTweet.id, empty likes/reactions/comments, etc.
- *  Sort newest first. Annotate for viewer like other list helpers.
+/** Profile replies: union of (a) real reply-tweets authored by the profile
+ * and (b) the profile's comments on other tweets, projected as zeroed-out
+ * pseudo-tweets — comments can't be liked/reacted/commented-on themselves
+ * in this app's data model.
  */
 export async function listRepliesByUser(
-  profileUserId: string,
-  viewerId?: string,
-): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-
-  const replyTweets = tweets.filter(
-    (tweet) => tweet.userId === profileUserId && tweet.replyToId,
-  )
-
-  const commentReplies: Tweet[] = []
-  for (const parent of tweets) {
-    for (const comment of parent.comments ?? []) {
-      if (comment.userId !== profileUserId) continue
-      commentReplies.push({
-        id: comment.id,
-        body: comment.body,
-        handle: comment.handle,
-        userId: comment.userId,
-        createdAt: comment.createdAt,
-        likes: 0,
-        liked: false,
-        likedBy: [],
-        reactions: [],
-        imageUrl: null,
-        replyToId: parent.id,
-        repostOfId: null,
-        repostOfHandle: null,
-        comments: [],
-        repostCount: 0,
-        reposted: false,
-        tags: [],
-      })
-    }
-  }
-
-  const combined = [...replyTweets, ...commentReplies].sort(
-    (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
-  )
-  return annotateForViewer(combined, viewerId, tweets)
-}
-
-/** Same as listRepliesByUser, but reads tweets/comments/likes/reactions from Postgres.
- * Union of (a) real reply-tweets authored by the profile and (b) the profile's
- * comments on other tweets, projected as zeroed-out pseudo-tweets — comments
- * can't be liked/reacted/commented-on themselves in this app's data model.
- */
-export async function listRepliesByUserFromDb(
   profileUserId: string,
   viewerId?: string,
 ): Promise<Tweet[]> {
@@ -506,31 +304,124 @@ export async function listRepliesByUserFromDb(
   `
 }
 
-export async function searchTweets(query: string): Promise<Tweet[]> {
-  const tweets = await purgeExpired()
-  const q = query.trim().toLowerCase()
-  if (!q) return tweets.slice(0, 40)
-
-  return tweets
-    .filter((tweet) => {
-      const body = tweet.body.toLowerCase()
-      const handle = tweet.handle.toLowerCase()
-      const tags = (tweet.tags ?? []).join(' ').toLowerCase()
-      const tagNeedle = q.replace(/^#/, '')
-      return (
-        body.includes(q) ||
-        handle.includes(q) ||
-        tags.includes(tagNeedle) ||
-        body.includes(`#${tagNeedle}`)
-      )
-    })
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-    .slice(0, 40)
+/** All live tweets, guest-context (liked/reposted always false — matches
+ * this endpoint's historical behavior of never reflecting a specific
+ * viewer). Used for AI ranking (semanticSearchTweets) and as the AI
+ * companion's feed fallback, both of which need full Tweet objects, not a
+ * projection.
+ */
+export async function listLiveTweets(): Promise<Tweet[]> {
+  const sql = getSql()
+  return sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      false as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      t.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      false as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    left join tweets ot on ot.id = t.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    where t.created_at >= now() - interval '24 hours'
+    order by t.created_at desc
+  `
 }
 
-/** All live tweets (for AI semantic ranking). */
-export async function listLiveTweets(): Promise<Tweet[]> {
-  return purgeExpired()
+/** Live post count, for /api/stats. A dedicated count query rather than
+ * listLiveTweets().length — stats only ever needed the number.
+ */
+export async function countLiveTweets(): Promise<number> {
+  const sql = getSql()
+  const [row] = await sql<{ count: number }[]>`
+    select count(*)::int as count from tweets
+    where created_at >= now() - interval '24 hours'
+  `
+  return row.count
+}
+
+/** Plain substring search over body/handle/tags, newest first, capped at 40
+ * — matches the tag search joining tags into a single string and checking
+ * substring (not per-tag exact match), same as the query used to build it.
+ */
+export async function searchTweets(query: string): Promise<Tweet[]> {
+  const q = query.trim().toLowerCase()
+  const tagNeedle = q.replace(/^#/, '')
+  const hashNeedle = `#${tagNeedle}`
+
+  const sql = getSql()
+  return sql<Tweet[]>`
+    select
+      t.id,
+      t.body,
+      u.handle,
+      t.user_id as "userId",
+      to_char(t.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
+      (select count(*)::int from likes l where l.tweet_id = t.id) as likes,
+      false as liked,
+      t.image_url as "imageUrl",
+      t.reply_to_id as "replyToId",
+      t.repost_of_id as "repostOfId",
+      ru.handle as "repostOfHandle",
+      (select count(*)::int from tweets r where r.repost_of_id = t.id) as "repostCount",
+      false as reposted,
+      coalesce(t.tags, '{}') as tags,
+      coalesce((
+        select json_agg(json_build_object(
+          'id', c.id,
+          'body', c.body,
+          'handle', cu.handle,
+          'userId', c.user_id,
+          'createdAt', to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) order by c.created_at)
+        from comments c join users cu on cu.id = c.user_id
+        where c.tweet_id = t.id
+      ), '[]') as comments,
+      coalesce((
+        select json_agg(json_build_object('emoji', r.emoji, 'userId', r.user_id) order by r.created_at)
+        from reactions r
+        where r.tweet_id = t.id
+      ), '[]') as reactions
+    from tweets t
+    join users u on u.id = t.user_id
+    left join tweets ot on ot.id = t.repost_of_id
+    left join users ru on ru.id = ot.user_id
+    where t.created_at >= now() - interval '24 hours'
+      and (
+        ${q} = ''
+        or position(${q} in lower(t.body)) > 0
+        or position(${q} in lower(u.handle)) > 0
+        or position(${tagNeedle} in lower(array_to_string(t.tags, ' '))) > 0
+        or position(${hashNeedle} in lower(t.body)) > 0
+      )
+    order by t.created_at desc
+    limit 40
+  `
 }
 
 export type TrendingTopic = {
@@ -558,8 +449,18 @@ function normalizeTrendingTag(raw: string): string | null {
   return cleaned ? `#${cleaned}` : null
 }
 
+/** Hashtag/tag counting and categorization is plain text processing that
+ * doesn't belong in SQL — only the data source changed here. Fetches just
+ * body/tags (not the full Tweet shape) since that's all this needs.
+ */
 export async function getTrendingTopics(limit = 8): Promise<TrendingTopic[]> {
-  const tweets = await purgeExpired()
+  const sql = getSql()
+  const tweets = await sql<{ body: string; tags: string[] }[]>`
+    select body, coalesce(tags, '{}') as tags
+    from tweets
+    where created_at >= now() - interval '24 hours'
+  `
+
   const counts = new Map<string, number>()
 
   for (const tweet of tweets) {
@@ -604,73 +505,10 @@ export async function getTrendingTopics(limit = 8): Promise<TrendingTopic[]> {
     .slice(0, limit)
 }
 
-export async function createTweet(input: {
-  body: string
-  handle: string
-  userId: string
-  imageUrl?: string
-  replyToId?: string
-  tags?: string[]
-}): Promise<Tweet> {
-  const data = createTweetSchema.parse({
-    body: input.body,
-    imageUrl: input.imageUrl,
-    replyToId: input.replyToId,
-  })
-
-  const tags = (input.tags ?? [])
-    .map((tag) =>
-      tag
-        .trim()
-        .toLowerCase()
-        .replace(/^#/, '')
-        .slice(0, 32),
-    )
-    .filter(Boolean)
-    .slice(0, 4)
-
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-
-    if (data.replyToId) {
-      const parent = tweets.find((tweet) => tweet.id === data.replyToId)
-      if (!parent) throw httpError('Parent post not found.', 404)
-    }
-
-    const tweet: Tweet = {
-      id: randomUUID(),
-      body: data.body,
-      handle: input.handle,
-      userId: input.userId,
-      createdAt: new Date().toISOString(),
-      likes: 0,
-      liked: false,
-      likedBy: [],
-      reactions: [],
-      imageUrl: data.imageUrl ?? null,
-      replyToId: data.replyToId ?? null,
-      repostOfId: null,
-      repostOfHandle: null,
-      comments: [],
-      repostCount: 0,
-      reposted: false,
-      tags,
-    }
-
-    const next = [tweet, ...tweets]
-    return {
-      store: { tweets: next },
-      result: annotateOne(tweet, input.userId, next),
-    }
-  })
-}
-
-/** Same as createTweet, but writes to Postgres. No `handle` param — tweets
- * has no handle column, so the response's handle comes from joining users,
- * same as every read-side *FromDb function.
+/** No `handle` param — tweets has no handle column, so the response's
+ * handle comes from joining users, same as every other read here.
  */
-export async function createTweetFromDb(input: {
+export async function createTweet(input: {
   body: string
   userId: string
   imageUrl?: string
@@ -739,56 +577,9 @@ export async function createTweetFromDb(input: {
   return row
 }
 
-export async function commentOnTweet(input: {
-  tweetId: string
-  body: string
-  handle: string
-  userId: string
-}): Promise<{ tweet: Tweet; ownerId?: string }> {
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    const index = tweets.findIndex((tweet) => tweet.id === input.tweetId)
-    if (index === -1) throw httpError('Tweet not found.', 404)
-
-    const current = tweets[index]
-    const comment = {
-      id: randomUUID(),
-      body: input.body.trim(),
-      handle: input.handle,
-      userId: input.userId,
-      createdAt: new Date().toISOString(),
-    }
-    const likedBy = likedByOf(current)
-    const updated: Tweet = {
-      ...current,
-      likedBy,
-      likes: likedBy.length,
-      liked: false,
-      comments: [...(current.comments ?? []), comment],
-      reactions: current.reactions ?? [],
-      imageUrl: current.imageUrl ?? null,
-      replyToId: current.replyToId ?? null,
-      repostOfId: current.repostOfId ?? null,
-      repostOfHandle: current.repostOfHandle ?? null,
-      repostCount: current.repostCount ?? 0,
-      reposted: false,
-    }
-    const next = [...tweets]
-    next[index] = updated
-    return {
-      store: { tweets: next },
-      result: {
-        tweet: annotateOne(updated, input.userId, next),
-        ownerId: current.userId,
-      },
-    }
-  })
-}
-
 /** Fetch one tweet in full response shape (handle joined, counts/viewer
- * flags computed live) — shared by every Postgres mutation below so they
- * don't each re-derive the same read after writing.
+ * flags computed live) — shared by every mutation below so they don't each
+ * re-derive the same read after writing.
  */
 async function fetchTweetForViewer(
   sql: ReturnType<typeof getSql>,
@@ -836,10 +627,8 @@ async function fetchTweetForViewer(
   return row
 }
 
-/** Same as commentOnTweet, but writes to Postgres. No `handle` param —
- * joined from users on read, same as every other *FromDb function.
- */
-export async function commentOnTweetFromDb(input: {
+/** No `handle` param — joined from users on read. */
+export async function commentOnTweet(input: {
   tweetId: string
   body: string
   userId: string
@@ -861,96 +650,12 @@ export async function commentOnTweetFromDb(input: {
   return { tweet, ownerId: parent.user_id }
 }
 
-/** Create a repost entry attributed to the current user. */
-export async function repostTweet(input: {
-  tweetId: string
-  handle: string
-  userId: string
-}): Promise<{ original: Tweet; repost: Tweet; ownerId?: string }> {
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    const index = tweets.findIndex((tweet) => tweet.id === input.tweetId)
-    if (index === -1) throw httpError('Tweet not found.', 404)
-
-    let target = tweets[index]
-    // Always attribute the repost to the root post, not another repost.
-    if (target.repostOfId) {
-      const root = tweets.find((tweet) => tweet.id === target.repostOfId)
-      if (root) target = root
-    }
-
-    const already = tweets.some(
-      (tweet) =>
-        tweet.userId === input.userId && tweet.repostOfId === target.id,
-    )
-    if (already) {
-      throw httpError('Already reposted.', 409, 'ALREADY_REPOSTED')
-    }
-
-    const targetIndex = tweets.findIndex((tweet) => tweet.id === target.id)
-    if (targetIndex === -1) throw httpError('Tweet not found.', 404)
-
-    const repost: Tweet = {
-      id: randomUUID(),
-      body: target.body,
-      handle: input.handle,
-      userId: input.userId,
-      createdAt: new Date().toISOString(),
-      likes: 0,
-      liked: false,
-      likedBy: [],
-      reactions: [],
-      imageUrl: target.imageUrl ?? null,
-      replyToId: null,
-      repostOfId: target.id,
-      repostOfHandle: target.handle,
-      comments: [],
-      repostCount: 0,
-      reposted: false,
-      tags: target.tags ?? [],
-    }
-
-    const targetLikedBy = likedByOf(target)
-    const updatedOriginal: Tweet = {
-      ...target,
-      likedBy: targetLikedBy,
-      likes: targetLikedBy.length,
-      liked: false,
-      repostCount: (target.repostCount ?? 0) + 1,
-      reactions: target.reactions ?? [],
-      comments: target.comments ?? [],
-      imageUrl: target.imageUrl ?? null,
-      replyToId: target.replyToId ?? null,
-      repostOfId: target.repostOfId ?? null,
-      repostOfHandle: target.repostOfHandle ?? null,
-      reposted: false,
-    }
-
-    const without = tweets.filter((_, i) => i !== targetIndex)
-    const next = [repost, updatedOriginal, ...without]
-    const [annotatedRepost, annotatedOriginal] = annotateForViewer(
-      [repost, updatedOriginal],
-      input.userId,
-      next,
-    )
-    return {
-      store: { tweets: next },
-      result: {
-        original: annotatedOriginal,
-        repost: annotatedRepost,
-        ownerId: target.userId,
-      },
-    }
-  })
-}
-
-/** Same as repostTweet, but writes to Postgres. Preserves the JSON version's
- * redirect-to-root-with-fallback: reposting a repost attributes to the root
- * post, UNLESS the root has since expired, in which case it falls back to
- * reposting the (still-live) repost row itself rather than erroring.
+/** Create a repost entry attributed to the current user. Redirect-to-root
+ * with fallback: reposting a repost attributes to the root post, UNLESS the
+ * root has since expired, in which case it falls back to reposting the
+ * (still-live) repost row itself rather than erroring.
  */
-export async function repostTweetFromDb(input: {
+export async function repostTweet(input: {
   tweetId: string
   userId: string
 }): Promise<{ original: Tweet; repost: Tweet; ownerId?: string }> {
@@ -1007,63 +712,10 @@ export async function repostTweetFromDb(input: {
   return { original, repost, ownerId: target.user_id }
 }
 
-/** Toggle like for this viewer via likedBy ledger. */
-export async function likeTweet(
-  tweetId: string,
-  viewerId: string,
-): Promise<{ tweet: Tweet; justLiked: boolean; ownerId?: string }> {
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    const index = tweets.findIndex((tweet) => tweet.id === tweetId)
-
-    if (index === -1) {
-      throw httpError('Tweet not found.', 404)
-    }
-
-    const current = tweets[index]
-    const likedBy = [...likedByOf(current)]
-    const existing = likedBy.indexOf(viewerId)
-    let justLiked: boolean
-    if (existing >= 0) {
-      likedBy.splice(existing, 1)
-      justLiked = false
-    } else {
-      likedBy.push(viewerId)
-      justLiked = true
-    }
-
-    const updated: Tweet = {
-      ...current,
-      likedBy,
-      likes: likedBy.length,
-      liked: false,
-      reactions: current.reactions ?? [],
-      comments: current.comments ?? [],
-      imageUrl: current.imageUrl ?? null,
-      replyToId: current.replyToId ?? null,
-      repostOfId: current.repostOfId ?? null,
-      repostOfHandle: current.repostOfHandle ?? null,
-      repostCount: current.repostCount ?? 0,
-      reposted: false,
-    }
-    const next = [...tweets]
-    next[index] = updated
-    return {
-      store: { tweets: next },
-      result: {
-        tweet: annotateOne(updated, viewerId, next),
-        justLiked,
-        ownerId: current.userId,
-      },
-    }
-  })
-}
-
-/** Same as likeTweet, but writes to Postgres — toggle via delete-then-maybe-
- * insert instead of a separate EXISTS check first.
+/** Toggle like for this viewer — delete-then-maybe-insert instead of a
+ * separate EXISTS check first.
  */
-export async function likeTweetFromDb(
+export async function likeTweet(
   tweetId: string,
   viewerId: string,
 ): Promise<{ tweet: Tweet; justLiked: boolean; ownerId?: string }> {
@@ -1090,50 +742,11 @@ export async function likeTweetFromDb(
   return { tweet, justLiked, ownerId: row.user_id }
 }
 
-export async function deleteTweet(
-  tweetId: string,
-  userId: string,
-): Promise<void> {
-  await mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    const index = tweets.findIndex((tweet) => tweet.id === tweetId)
-
-    if (index === -1) {
-      throw httpError('Tweet not found.', 404)
-    }
-
-    const tweet = tweets[index]
-    if (tweet.userId !== userId) {
-      throw httpError('You can only delete your own posts.', 403, 'FORBIDDEN')
-    }
-
-    let next = tweets.filter((_, i) => i !== index)
-
-    if (tweet.repostOfId) {
-      // Deleting a repost — decrement the original's repostCount.
-      next = next.map((item) => {
-        if (item.id !== tweet.repostOfId) return item
-        return {
-          ...item,
-          repostCount: Math.max(0, (item.repostCount ?? 0) - 1),
-        }
-      })
-    } else {
-      // Deleting an original — remove orphaned reposts that point at it.
-      next = next.filter((item) => item.repostOfId !== tweet.id)
-    }
-
-    return { store: { tweets: next }, result: undefined }
-  })
-}
-
-/** Same as deleteTweet, but writes to Postgres. Simpler than the JSON
- * version's manual orphan-cleanup: schema.sql's ON DELETE CASCADE on
+/** Deleting the row is enough — schema.sql's ON DELETE CASCADE on
  * repost_of_id (and SET NULL on reply_to_id, likes/comments/reactions all
- * CASCADE) means dropping the row does that work declaratively.
+ * CASCADE) does the orphan cleanup declaratively.
  */
-export async function deleteTweetFromDb(
+export async function deleteTweet(
   tweetId: string,
   userId: string,
 ): Promise<void> {
@@ -1151,72 +764,11 @@ export async function deleteTweetFromDb(
   await sql`delete from tweets where id = ${tweetId}`
 }
 
-/** Toggle an emoji reaction for this user (add if missing, remove if present). */
-export async function reactToTweet(
-  tweetId: string,
-  userId: string,
-  emojiRaw: string,
-): Promise<{
-  tweet: Tweet
-  justAdded: boolean
-  ownerId?: string
-  emoji: string
-}> {
-  const { emoji } = reactTweetSchema.parse({ emoji: emojiRaw })
-  return mutateJsonFile(storePath(), emptyStore(), parseStore, (store) => {
-    const now = Date.now()
-    const tweets = store.tweets.filter((tweet) => !isTweetExpired(tweet, now))
-    const index = tweets.findIndex((tweet) => tweet.id === tweetId)
-
-    if (index === -1) {
-      throw httpError('Tweet not found.', 404)
-    }
-
-    const current = tweets[index]
-    const reactions = [...(current.reactions ?? [])]
-    const existing = reactions.findIndex(
-      (reaction) => reaction.userId === userId && reaction.emoji === emoji,
-    )
-
-    if (existing >= 0) {
-      reactions.splice(existing, 1)
-    } else {
-      reactions.push({ emoji, userId })
-    }
-
-    const likedBy = likedByOf(current)
-    const updated: Tweet = {
-      ...current,
-      likedBy,
-      likes: likedBy.length,
-      liked: false,
-      reactions,
-      comments: current.comments ?? [],
-      imageUrl: current.imageUrl ?? null,
-      replyToId: current.replyToId ?? null,
-      repostOfId: current.repostOfId ?? null,
-      repostOfHandle: current.repostOfHandle ?? null,
-      repostCount: current.repostCount ?? 0,
-      reposted: false,
-    }
-    const next = [...tweets]
-    next[index] = updated
-    return {
-      store: { tweets: next },
-      result: {
-        tweet: annotateOne(updated, userId, next),
-        justAdded: existing < 0,
-        ownerId: current.userId,
-        emoji,
-      },
-    }
-  })
-}
-
-/** Same as reactToTweet, but writes to Postgres. Same delete-then-maybe-
- * insert toggle as likeTweetFromDb, keyed on (tweet_id, user_id, emoji).
+/** Toggle an emoji reaction for this user (add if missing, remove if
+ * present) — same delete-then-maybe-insert toggle as likeTweet, keyed on
+ * (tweet_id, user_id, emoji).
  */
-export async function reactToTweetFromDb(
+export async function reactToTweet(
   tweetId: string,
   userId: string,
   emojiRaw: string,

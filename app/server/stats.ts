@@ -1,7 +1,7 @@
 import { countFollowEdges } from './follows.ts'
-import { countMessageThreadsFromDb } from './messages.ts'
-import { readTweets } from './store.ts'
-import { countUsersFromDb } from './users.ts'
+import { countMessageThreads } from './messages.ts'
+import { countLiveTweets } from './store.ts'
+import { countUsers } from './users.ts'
 
 export type PlatformStats = {
   users: number
@@ -10,18 +10,18 @@ export type PlatformStats = {
   follows: number
 }
 
-/** Live platform totals from on-disk stores — no placeholder values. */
+/** Live platform totals from Postgres — no placeholder values. */
 export async function getPlatformStats(): Promise<PlatformStats> {
-  const [users, tweets, messageThreads, follows] = await Promise.all([
-    countUsersFromDb(),
-    readTweets(),
-    countMessageThreadsFromDb(),
+  const [users, livePosts, messageThreads, follows] = await Promise.all([
+    countUsers(),
+    countLiveTweets(),
+    countMessageThreads(),
     countFollowEdges(),
   ])
 
   return {
     users,
-    livePosts: tweets.length,
+    livePosts,
     messageThreads,
     follows,
   }

@@ -2,19 +2,10 @@ import 'dotenv/config'
 import { serve } from '@hono/node-server'
 import { createApp } from './app.ts'
 import { registerApiFallback } from './apiFallback.ts'
-import {
-  cleanupStaleTempFiles,
-  DEFAULT_DATA_DIR,
-} from './jsonStore.ts'
 import { pruneRateLimitBuckets } from './rateLimit.ts'
 import { assertSessionSecretConfigured } from './session.ts'
-import { purgeExpired } from './store.ts'
 
 assertSessionSecretConfigured()
-
-void cleanupStaleTempFiles(DEFAULT_DATA_DIR).catch((error) => {
-  console.error('cleanupStaleTempFiles failed', error)
-})
 
 /**
  * Frontend API audit (`src/lib/api.ts`) — all implemented in createApp():
@@ -75,9 +66,9 @@ serve({ fetch: app.fetch, port }, (info) => {
   console.log(`API listening on http://localhost:${info.port}`)
 })
 
+// Expired tweets are filtered at read time (WHERE created_at >= now() -
+// interval '24 hours' in every query) rather than physically deleted, so
+// there's no periodic purge step to run for them anymore.
 setInterval(() => {
-  void purgeExpired().catch((error) => {
-    console.error('purgeExpired failed', error)
-  })
   pruneRateLimitBuckets()
 }, 30_000)

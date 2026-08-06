@@ -37,9 +37,9 @@ import {
   toggleFollowFromDb,
 } from './follows.ts'
 import {
-  getThread,
-  listConversations,
-  sendMessage,
+  getThreadFromDb,
+  listConversationsFromDb,
+  sendMessageFromDb,
 } from './messages.ts'
 import { getPlatformStats } from './stats.ts'
 import {
@@ -870,7 +870,7 @@ export function createApp() {
       if (!user) {
         return c.json(errorBody('UNAUTHORIZED', 'Sign in to view messages.'), 401)
       }
-      const conversations = await listConversations(user.id)
+      const conversations = await listConversationsFromDb(user.id)
       return c.json({ conversations })
     } catch (error) {
       console.error(error)
@@ -888,7 +888,7 @@ export function createApp() {
         .string()
         .uuid({ message: 'Invalid peer id.' })
         .parse(c.req.param('peerId'))
-      const thread = await getThread(user.id, peerId)
+      const thread = await getThreadFromDb(user.id, peerId)
       if (!thread) {
         return c.json(errorBody('NOT_FOUND', 'User not found.'), 404)
       }
@@ -915,7 +915,7 @@ export function createApp() {
       if (writeLimited) return writeLimited
 
       const payload = sendMessageSchema.parse(await c.req.json())
-      const message = await sendMessage({
+      const message = await sendMessageFromDb({
         fromUserId: user.id,
         toUserId: payload.toUserId,
         body: payload.body,

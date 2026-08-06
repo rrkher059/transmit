@@ -52,6 +52,22 @@ export async function isBlockedEitherWay(
   )
 }
 
+/** Same as isBlockedEitherWay, but checks the Postgres blocks table. */
+export async function isBlockedEitherWayFromDb(
+  userA: string,
+  userB: string,
+): Promise<boolean> {
+  const sql = getSql()
+  const [row] = await sql<{ exists: boolean }[]>`
+    select exists(
+      select 1 from blocks
+      where (blocker_id = ${userA} and blocked_id = ${userB})
+         or (blocker_id = ${userB} and blocked_id = ${userA})
+    ) as "exists"
+  `
+  return row.exists
+}
+
 /** IDs blocked by (or blocking) the given user. */
 export async function listBlockedPeerIds(userId: string): Promise<Set<string>> {
   const store = await readStore()

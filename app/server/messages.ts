@@ -218,6 +218,19 @@ export async function countMessageThreads(): Promise<number> {
   return pairs.size
 }
 
+/** Same as countMessageThreads, but reads from Postgres. COUNT(DISTINCT ...)
+ * on a (least, greatest) tuple canonicalizes each undirected pair without
+ * needing string concatenation.
+ */
+export async function countMessageThreadsFromDb(): Promise<number> {
+  const sql = getSql()
+  const [row] = await sql<{ count: number }[]>`
+    select count(distinct (least(from_user_id, to_user_id), greatest(from_user_id, to_user_id)))::int as count
+    from messages
+  `
+  return row.count
+}
+
 export async function sendMessage(input: {
   fromUserId: string
   toUserId: string

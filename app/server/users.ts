@@ -234,10 +234,35 @@ export async function listPublicUsers(
     .map(toPublic)
 }
 
+/** Same as listPublicUsers, but reads from Postgres. No explicit sort in the
+ * JSON version either — both order by signup order (created_at), not handle.
+ */
+export async function listPublicUsersFromDb(
+  excludeUserId?: string,
+  limit = 5,
+): Promise<PublicUser[]> {
+  const sql = getSql()
+  return sql<PublicUser[]>`
+    select id, handle,
+      to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from users
+    where ${excludeUserId ?? null}::uuid is null or id <> ${excludeUserId ?? null}::uuid
+    order by created_at asc, id asc
+    limit ${limit}
+  `
+}
+
 /** Total registered operators. */
 export async function countUsers(): Promise<number> {
   const store = await readStore()
   return store.users.length
+}
+
+/** Same as countUsers, but reads from Postgres. */
+export async function countUsersFromDb(): Promise<number> {
+  const sql = getSql()
+  const [row] = await sql<{ count: number }[]>`select count(*)::int as count from users`
+  return row.count
 }
 
 export async function searchUsers(
@@ -259,4 +284,31 @@ export async function searchUsers(
     })
     .slice(0, limit)
     .map(toPublic)
+}
+
+/** Same as searchUsers, but reads from Postgres. handle is always stored
+ * with a leading '@' (handleSchema), so the JSON version's second OR
+ * condition (matching against the handle with '@' stripped) can never match
+ * anything the first doesn't — stripped is always a substring of unstripped.
+ * Only the one condition is needed here.
+ */
+export async function searchUsersFromDb(
+  query: string,
+  excludeUserId?: string,
+  limit = 20,
+): Promise<PublicUser[]> {
+  const q = query
+    .trim()
+    .toLowerCase()
+    .replace(/^@/, '')
+  const sql = getSql()
+  return sql<PublicUser[]>`
+    select id, handle,
+      to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from users
+    where (${excludeUserId ?? null}::uuid is null or id <> ${excludeUserId ?? null}::uuid)
+      and (${q} = '' or position(${q} in lower(handle)) > 0)
+    order by created_at asc, id asc
+    limit ${limit}
+  `
 }

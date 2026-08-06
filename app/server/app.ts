@@ -76,8 +76,8 @@ import {
   authenticateUserFromDb,
   createUserFromDb,
   getPrivateUserFromDb,
-  listPublicUsers,
-  searchUsers,
+  listPublicUsersFromDb,
+  searchUsersFromDb,
 } from './users.ts'
 
 type AppVariables = {
@@ -405,7 +405,7 @@ export function createApp() {
         ? await semanticSearchTweets(q, await listLiveTweets())
         : await searchTweets(q)
       // Guests can search tweets; user discovery requires auth.
-      const users = user ? await searchUsers(q, user.id) : []
+      const users = user ? await searchUsersFromDb(q, user.id) : []
       const visible = user
         ? tweets
         : tweets.filter((tweet) => !tweet.repostOfId)
@@ -576,7 +576,7 @@ export function createApp() {
           401,
         )
       }
-      const users = await listPublicUsers(user.id, 5)
+      const users = await listPublicUsersFromDb(user.id, 5)
       return c.json({ users })
     } catch (error) {
       console.error(error)
@@ -951,7 +951,7 @@ export function createApp() {
           400,
         )
       }
-      const users = await searchUsers(q, user.id)
+      const users = await searchUsersFromDb(q, user.id)
       return c.json({ users, query: q })
     } catch (error) {
       console.error(error)

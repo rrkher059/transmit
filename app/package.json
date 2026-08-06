@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://rrkher059-cloud.github.io/7ransmi7",
+  "homepage": "https://rrkher059.github.io/transmit",
   "scripts": {
     "dev": "concurrently -k -n api,web -c amber,cyan \"npm run server\" \"npm run client\"",
     "build": "tsc -b && vite build",

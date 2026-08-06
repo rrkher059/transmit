@@ -6,7 +6,7 @@ import path from 'node:path'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   // GitHub Pages project site — keep in sync with package.json "homepage".
-  base: '/7ransmi7/',
+  base: '/transmit/',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

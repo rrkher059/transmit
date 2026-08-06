@@ -228,3 +228,61 @@ export async function toggleFollow(
     }
   })
 }
+
+/** Same as toggleFollow, but writes to Postgres. The follower === following
+ * check stays here as the fast path (no DB round trip); follows_no_self_follow
+ * is a defensive backstop for anything that calls the insert without going
+ * through this check — caught below and translated the same as the JS check,
+ * never a raw constraint violation.
+ */
+export async function toggleFollowFromDb(
+  followerId: string,
+  followingId: string,
+): Promise<{ isFollowing: boolean; stats: FollowStats }> {
+  if (followerId === followingId) {
+    const error = new Error('Cannot follow yourself.')
+    ;(error as Error & { status: number; code: string }).status = 400
+    ;(error as Error & { status: number; code: string }).code = 'INVALID_FOLLOW'
+    throw error
+  }
+
+  const target = await getPublicUserFromDb(followingId)
+  if (!target) {
+    const error = new Error('User not found.')
+    ;(error as Error & { status: number; code: string }).status = 404
+    ;(error as Error & { status: number; code: string }).code = 'USER_NOT_FOUND'
+    throw error
+  }
+
+  const sql = getSql()
+
+  const deleted = await sql`
+    delete from follows where follower_id = ${followerId} and following_id = ${followingId}
+  `
+  let isFollowing: boolean
+  if (deleted.count > 0) {
+    isFollowing = false
+  } else {
+    try {
+      await sql`
+        insert into follows (follower_id, following_id) values (${followerId}, ${followingId})
+      `
+    } catch (err) {
+      const pgError = err as { code?: string; constraint_name?: string }
+      if (
+        pgError.code === '23514' &&
+        pgError.constraint_name === 'follows_no_self_follow'
+      ) {
+        const error = new Error('Cannot follow yourself.')
+        ;(error as Error & { status: number; code: string }).status = 400
+        ;(error as Error & { status: number; code: string }).code = 'INVALID_FOLLOW'
+        throw error
+      }
+      throw err
+    }
+    isFollowing = true
+  }
+
+  const stats = await getFollowStatsFromDb(followingId, followerId)
+  return { isFollowing, stats }
+}

@@ -29,12 +29,12 @@ import {
   semanticSearchTweets,
 } from './ai.ts'
 import { enforceRateLimit } from './rateLimit.ts'
-import { toggleBlock } from './blocks.ts'
+import { toggleBlockFromDb } from './blocks.ts'
 import {
   getFollowStatsFromDb,
   listFollowersFromDb,
   listFollowingFromDb,
-  toggleFollow,
+  toggleFollowFromDb,
 } from './follows.ts'
 import {
   getThread,
@@ -1045,7 +1045,7 @@ export function createApp() {
       const writeLimited = enforceWriteRateLimit(c, viewer.id)
       if (writeLimited) return writeLimited
 
-      const result = await toggleFollow(viewer.id, c.req.param('id'))
+      const result = await toggleFollowFromDb(viewer.id, c.req.param('id'))
       if (result.isFollowing) {
         await pushNotification({
           recipientId: c.req.param('id'),
@@ -1076,7 +1076,7 @@ export function createApp() {
       const writeLimited = enforceWriteRateLimit(c, viewer.id)
       if (writeLimited) return writeLimited
 
-      const result = await toggleBlock(viewer.id, c.req.param('id'))
+      const result = await toggleBlockFromDb(viewer.id, c.req.param('id'))
       return c.json(result)
     } catch (error) {
       if (statusError(error)) {

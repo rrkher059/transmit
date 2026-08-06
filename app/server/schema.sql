@@ -20,7 +20,8 @@ create table if not exists follows (
   follower_id  uuid not null references users(id),
   following_id uuid not null references users(id),
   created_at   timestamptz not null default now(),
-  primary key (follower_id, following_id)
+  primary key (follower_id, following_id),
+  constraint follows_no_self_follow check (follower_id <> following_id)
 );
 
 create index if not exists follows_following_id_idx on follows (following_id);
@@ -72,7 +73,8 @@ create table if not exists blocks (
   blocker_id uuid not null references users(id),
   blocked_id uuid not null references users(id),
   created_at timestamptz not null default now(),
-  primary key (blocker_id, blocked_id)
+  primary key (blocker_id, blocked_id),
+  constraint blocks_no_self_block check (blocker_id <> blocked_id)
 );
 
 create index if not exists blocks_blocked_id_idx on blocks (blocked_id);
@@ -127,3 +129,9 @@ alter table tweets add constraint tweets_reply_to_id_fkey
 alter table notifications drop constraint if exists notifications_tweet_id_fkey;
 alter table notifications add constraint notifications_tweet_id_fkey
   foreign key (tweet_id) references tweets(id) on delete set null;
+
+alter table follows drop constraint if exists follows_no_self_follow;
+alter table follows add constraint follows_no_self_follow check (follower_id <> following_id);
+
+alter table blocks drop constraint if exists blocks_no_self_block;
+alter table blocks add constraint blocks_no_self_block check (blocker_id <> blocked_id);

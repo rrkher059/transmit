@@ -27,10 +27,10 @@ export async function createUser(input: {
         returning id, email, handle,
           to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
       `
-      await tx`
-        insert into user_credentials (user_id, password_hash)
-        values (${userId}, ${passwordHash})
-      `
+      // Not a direct insert: app_user has no grant on user_credentials at
+      // all (schema.sql) — this goes through a SECURITY DEFINER function
+      // instead, same reasoning as authenticateUser's read below.
+      await tx`select create_user_credentials(${userId}, ${passwordHash})`
       return user
     })
   } catch (err) {
@@ -61,15 +61,16 @@ export async function authenticateUser(
   email: string,
   password: string,
 ): Promise<PrivateUser | null> {
+  // Not a direct join: app_user has no grant on user_credentials at all
+  // (schema.sql) — password_hash is only reachable through this SECURITY
+  // DEFINER function, which runs as its owner rather than as app_user.
   const sql = getSql()
   const [row] = await sql<
     { id: string; email: string; handle: string; password_hash: string; createdAt: string }[]
   >`
-    select u.id, u.email, u.handle, c.password_hash,
-      to_char(u.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
-    from users u
-    join user_credentials c on c.user_id = u.id
-    where u.email = ${email.toLowerCase()}
+    select id, email, handle, password_hash,
+      to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from get_password_hash_for_login(${email.toLowerCase()})
   `
   const ok = await verifySecret(password, row?.password_hash ?? DUMMY_PASSWORD_HASH)
   if (!row || !ok) return null

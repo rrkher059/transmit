@@ -12,6 +12,16 @@ function isDevOrTestRuntime(): boolean {
   )
 }
 
+function connect(connectionString: string): Sql {
+  return postgres(connectionString, {
+    // Render's managed Postgres (and most hosted providers) require SSL but
+    // present certs that fail default CA verification; 'require' encrypts
+    // the connection without verifying the chain. Local/dev Postgres has no
+    // SSL listener at all, so it must stay off there.
+    ssl: isProductionRuntime() ? 'require' : false,
+  })
+}
+
 let client: Sql | undefined
 
 /**
@@ -20,6 +30,10 @@ let client: Sql | undefined
  * don't need DATABASE_URL set unless they actually run a query — e.g. tests
  * that import server/app.ts but never touch Postgres. Every call after the
  * first reuses the same `client`, so it's still one pool for the process.
+ *
+ * This is the app's runtime connection — DATABASE_URL is expected to be the
+ * restricted app_user role (see schema.sql), which has no DDL privileges.
+ * Schema application uses createSchemaConnection() below instead.
  */
 function getPool(): Sql {
   if (client) return client
@@ -29,14 +43,24 @@ function getPool(): Sql {
     throw new Error('DATABASE_URL is required.')
   }
 
-  client = postgres(connectionString, {
-    // Render's managed Postgres (and most hosted providers) require SSL but
-    // present certs that fail default CA verification; 'require' encrypts
-    // the connection without verifying the chain. Local/dev Postgres has no
-    // SSL listener at all, so it must stay off there.
-    ssl: isProductionRuntime() ? 'require' : false,
-  })
+  client = connect(connectionString)
   return client
+}
+
+/**
+ * A separate, non-singleton connection for server/applySchema.ts only.
+ * schema.sql creates/alters tables, roles, and SECURITY DEFINER functions —
+ * DDL that app_user (DATABASE_URL, above) can't run. Prefers
+ * SCHEMA_DATABASE_URL so the two can point at different roles once
+ * app_user's password is set; falls back to DATABASE_URL so this keeps
+ * working before that split is made.
+ */
+export function createSchemaConnection(): Sql {
+  const connectionString = process.env.SCHEMA_DATABASE_URL ?? process.env.DATABASE_URL
+  if (!connectionString) {
+    throw new Error('SCHEMA_DATABASE_URL (or DATABASE_URL) is required.')
+  }
+  return connect(connectionString)
 }
 
 // ---- Postgres-side request identity, for RLS's auth.uid()/auth.role() ----

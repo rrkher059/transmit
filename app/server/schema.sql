@@ -224,39 +224,71 @@ drop policy if exists app_user_placeholder_allow_all on reactions;
 drop policy if exists app_user_placeholder_allow_all on messages;
 drop policy if exists app_user_placeholder_allow_all on notifications;
 
+-- Symmetric block-aware visibility helper: true iff a and b block each
+-- other in either direction. Not SECURITY DEFINER — runs as the caller
+-- (app_user), reading blocks under its own (still placeholder, allow-all)
+-- policy, which is exactly what's needed: this check must see every blocks
+-- row regardless of who's asking, not a subset filtered by blocks' own
+-- (not yet designed) policy. auth.uid() is null for guests, and no blocks
+-- row can have a null blocker_id/blocked_id (both NOT NULL), so this is
+-- always false for guests — they're unaffected by block filtering below,
+-- same as before this change.
+create or replace function is_blocked_pair(a uuid, b uuid)
+returns boolean
+language sql
+stable
+as $$
+  select exists (
+    select 1 from blocks
+    where (blocker_id = a and blocked_id = b)
+       or (blocker_id = b and blocked_id = a)
+  )
+$$;
+
 -- tweets / comments / likes / reactions / follows: reads are open to
 -- everyone, including guests (auth.uid() is null for them, never `using
 -- (auth.uid() is not null)`) — this app serves public feeds and profiles to
 -- logged-out visitors (GET /api/tweets, /api/users/:id/tweets|likes|replies
 -- |follow-stats, /api/explore/trending all read these tables without
--- requiring a session). Writes are ownership-gated; guests are excluded
--- from those for free since auth.uid() = NULL never equals a real id.
+-- requiring a session). tweets/comments/likes/reactions additionally hide
+-- rows authored by (user_id) anyone the viewer blocks or is blocked by —
+-- symmetric, both directions. follows is NOT included here — not asked for
+-- in this pass. Writes are ownership-gated; guests are excluded from those
+-- for free since auth.uid() = NULL never equals a real id.
 
 drop policy if exists tweets_select_public on tweets;
+drop policy if exists tweets_select_visible on tweets;
 drop policy if exists tweets_insert_own on tweets;
 drop policy if exists tweets_delete_own on tweets;
-create policy tweets_select_public on tweets for select to app_user using (true);
+create policy tweets_select_visible on tweets for select to app_user
+  using (not is_blocked_pair(auth.uid(), user_id));
 create policy tweets_insert_own on tweets for insert to app_user with check (auth.uid() = user_id);
 create policy tweets_delete_own on tweets for delete to app_user using (auth.uid() = user_id);
 
 drop policy if exists comments_select_public on comments;
+drop policy if exists comments_select_visible on comments;
 drop policy if exists comments_insert_own on comments;
 drop policy if exists comments_delete_own on comments;
-create policy comments_select_public on comments for select to app_user using (true);
+create policy comments_select_visible on comments for select to app_user
+  using (not is_blocked_pair(auth.uid(), user_id));
 create policy comments_insert_own on comments for insert to app_user with check (auth.uid() = user_id);
 create policy comments_delete_own on comments for delete to app_user using (auth.uid() = user_id);
 
 drop policy if exists likes_select_public on likes;
+drop policy if exists likes_select_visible on likes;
 drop policy if exists likes_insert_own on likes;
 drop policy if exists likes_delete_own on likes;
-create policy likes_select_public on likes for select to app_user using (true);
+create policy likes_select_visible on likes for select to app_user
+  using (not is_blocked_pair(auth.uid(), user_id));
 create policy likes_insert_own on likes for insert to app_user with check (auth.uid() = user_id);
 create policy likes_delete_own on likes for delete to app_user using (auth.uid() = user_id);
 
 drop policy if exists reactions_select_public on reactions;
+drop policy if exists reactions_select_visible on reactions;
 drop policy if exists reactions_insert_own on reactions;
 drop policy if exists reactions_delete_own on reactions;
-create policy reactions_select_public on reactions for select to app_user using (true);
+create policy reactions_select_visible on reactions for select to app_user
+  using (not is_blocked_pair(auth.uid(), user_id));
 create policy reactions_insert_own on reactions for insert to app_user with check (auth.uid() = user_id);
 create policy reactions_delete_own on reactions for delete to app_user using (auth.uid() = user_id);
 

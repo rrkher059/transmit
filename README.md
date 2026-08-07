@@ -9,7 +9,7 @@ Short-lived social network built with a Vite + React client and a Hono API.
 - React / Vite (frontend)
 - Hono (API)
 - Zod (shared schemas)
-- JSON file stores (local persistence)
+- Postgres (persistence)
 
 ## Setup
 

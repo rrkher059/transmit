@@ -5,6 +5,7 @@ import { cors } from 'hono/cors'
 import { bodyLimit } from 'hono/body-limit'
 import { secureHeaders } from 'hono/secure-headers'
 import { ZodError, z } from 'zod'
+import { withRequestUser } from './db.ts'
 import {
   createTweetSchema,
   commentTweetSchema,
@@ -267,6 +268,16 @@ export function createApp() {
 
     // No Origin and no Referer — CLI / same-origin tests / non-browser clients.
     return next()
+  })
+
+  // Postgres-side identity for this request, for RLS's auth.uid()/auth.role()
+  // (server/db.ts) — separate from the browser session cookie above, which
+  // this doesn't touch. Guests skip straight to next() with no Postgres
+  // identity attached; getSql() falls back to the plain pool for them.
+  app.use('*', async (c, next) => {
+    const user = await currentUser(c)
+    if (!user) return next()
+    return withRequestUser(user.id, next)
   })
 
   app.get('/api/health', (c) => c.json({ ok: true, service: 'transmit-api' }))

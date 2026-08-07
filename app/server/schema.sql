@@ -210,26 +210,102 @@ revoke all on user_credentials from app_user;
 -- something this migration turned on: Supabase's `ensure_rls` event
 -- trigger auto-enables it on every new table. It's only ever been inert
 -- because every connection so far has used postgres, which has BYPASSRLS.
--- app_user deliberately doesn't, so without policies here it would get zero
--- rows from every table the moment it's used. These policies are a
--- placeholder, not real row-level access control — USING (true) restores
--- exactly today's unrestricted behavior. Replace with real per-user rules
--- when RLS is actually designed; user_credentials is deliberately excluded
--- and must stay that way — it has no legitimate row-level rule to write,
--- only the two SECURITY DEFINER functions below should ever touch it.
-do $$
-declare
-  t text;
-begin
-  foreach t in array array['users','follows','tweets','likes','comments','reactions','blocks','messages','notifications']
-  loop
-    execute format('drop policy if exists app_user_placeholder_allow_all on %I', t);
-    execute format(
-      'create policy app_user_placeholder_allow_all on %I for all to app_user using (true) with check (true)',
-      t
-    );
-  end loop;
-end $$;
+-- app_user deliberately doesn't. user_credentials is deliberately excluded
+-- from all of this and must stay that way — it has no legitimate
+-- row-level rule to write, only the two SECURITY DEFINER functions above
+-- should ever touch it. blocks keeps its placeholder allow-all policy —
+-- block-aware visibility is a separate, later step, not this one.
+drop policy if exists app_user_placeholder_allow_all on users;
+drop policy if exists app_user_placeholder_allow_all on follows;
+drop policy if exists app_user_placeholder_allow_all on tweets;
+drop policy if exists app_user_placeholder_allow_all on likes;
+drop policy if exists app_user_placeholder_allow_all on comments;
+drop policy if exists app_user_placeholder_allow_all on reactions;
+drop policy if exists app_user_placeholder_allow_all on messages;
+drop policy if exists app_user_placeholder_allow_all on notifications;
+
+-- tweets / comments / likes / reactions / follows: reads are open to
+-- everyone, including guests (auth.uid() is null for them, never `using
+-- (auth.uid() is not null)`) — this app serves public feeds and profiles to
+-- logged-out visitors (GET /api/tweets, /api/users/:id/tweets|likes|replies
+-- |follow-stats, /api/explore/trending all read these tables without
+-- requiring a session). Writes are ownership-gated; guests are excluded
+-- from those for free since auth.uid() = NULL never equals a real id.
+
+drop policy if exists tweets_select_public on tweets;
+drop policy if exists tweets_insert_own on tweets;
+drop policy if exists tweets_delete_own on tweets;
+create policy tweets_select_public on tweets for select to app_user using (true);
+create policy tweets_insert_own on tweets for insert to app_user with check (auth.uid() = user_id);
+create policy tweets_delete_own on tweets for delete to app_user using (auth.uid() = user_id);
+
+drop policy if exists comments_select_public on comments;
+drop policy if exists comments_insert_own on comments;
+drop policy if exists comments_delete_own on comments;
+create policy comments_select_public on comments for select to app_user using (true);
+create policy comments_insert_own on comments for insert to app_user with check (auth.uid() = user_id);
+create policy comments_delete_own on comments for delete to app_user using (auth.uid() = user_id);
+
+drop policy if exists likes_select_public on likes;
+drop policy if exists likes_insert_own on likes;
+drop policy if exists likes_delete_own on likes;
+create policy likes_select_public on likes for select to app_user using (true);
+create policy likes_insert_own on likes for insert to app_user with check (auth.uid() = user_id);
+create policy likes_delete_own on likes for delete to app_user using (auth.uid() = user_id);
+
+drop policy if exists reactions_select_public on reactions;
+drop policy if exists reactions_insert_own on reactions;
+drop policy if exists reactions_delete_own on reactions;
+create policy reactions_select_public on reactions for select to app_user using (true);
+create policy reactions_insert_own on reactions for insert to app_user with check (auth.uid() = user_id);
+create policy reactions_delete_own on reactions for delete to app_user using (auth.uid() = user_id);
+
+-- "Yourself" here is the follower side — you can only create or remove a
+-- follow edge where you are the one doing the following.
+drop policy if exists follows_select_public on follows;
+drop policy if exists follows_insert_own on follows;
+drop policy if exists follows_delete_own on follows;
+create policy follows_select_public on follows for select to app_user using (true);
+create policy follows_insert_own on follows for insert to app_user with check (auth.uid() = follower_id);
+create policy follows_delete_own on follows for delete to app_user using (auth.uid() = follower_id);
+
+-- users: profiles are public reads, same reasoning as above (guest profile
+-- pages need this). Updates are owner-only. Insert has no ownership check
+-- (with check (true)) because signup itself creates this row before any
+-- session/JWT exists — auth.uid() is always null at that point, by
+-- construction, so an ownership check here would block every signup. The
+-- row is inert without a matching user_credentials row, which only
+-- create_user_credentials() (SECURITY DEFINER, above) can write.
+drop policy if exists users_select_public on users;
+drop policy if exists users_insert_signup on users;
+drop policy if exists users_update_own on users;
+create policy users_select_public on users for select to app_user using (true);
+create policy users_insert_signup on users for insert to app_user with check (true);
+create policy users_update_own on users for update to app_user using (auth.uid() = id) with check (auth.uid() = id);
+
+-- messages: already 401-gated for guests at the app layer (GET
+-- /api/messages, /api/messages/:peerId, POST /api/messages all require a
+-- session), so there's no guest-facing read to preserve here.
+drop policy if exists messages_select_participant on messages;
+drop policy if exists messages_insert_as_sender on messages;
+create policy messages_select_participant on messages for select to app_user
+  using (auth.uid() = from_user_id or auth.uid() = to_user_id);
+create policy messages_insert_as_sender on messages for insert to app_user
+  with check (auth.uid() = from_user_id);
+
+-- notifications: also already 401-gated for guests at the app layer. Insert
+-- is "as yourself" in actor terms — you can create a notification for any
+-- recipient, but only with yourself as the actor, not impersonating someone
+-- else's action.
+drop policy if exists notifications_select_recipient on notifications;
+drop policy if exists notifications_update_recipient on notifications;
+drop policy if exists notifications_insert_as_actor on notifications;
+create policy notifications_select_recipient on notifications for select to app_user
+  using (auth.uid() = recipient_id);
+create policy notifications_update_recipient on notifications for update to app_user
+  using (auth.uid() = recipient_id) with check (auth.uid() = recipient_id);
+create policy notifications_insert_as_actor on notifications for insert to app_user
+  with check (auth.uid() = actor_id);
 
 -- Runs as its owner (whichever role applies this schema — currently
 -- postgres), so it can read user_credentials even though app_user itself

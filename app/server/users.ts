@@ -16,16 +16,23 @@ export async function createUser(input: {
 }): Promise<PrivateUser> {
   const passwordHash = await hashSecret(input.password)
   const email = input.email.toLowerCase()
+  const userId = randomUUID()
   const sql = getSql()
 
   try {
-    const [row] = await sql<PrivateUser[]>`
-      insert into users (id, email, handle, password_hash, created_at)
-      values (${randomUUID()}, ${email}, ${input.handle}, ${passwordHash}, now())
-      returning id, email, handle,
-        to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
-    `
-    return row
+    return await sql.begin(async (tx) => {
+      const [user] = await tx<PrivateUser[]>`
+        insert into users (id, email, handle, created_at)
+        values (${userId}, ${email}, ${input.handle}, now())
+        returning id, email, handle,
+          to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+      `
+      await tx`
+        insert into user_credentials (user_id, password_hash)
+        values (${userId}, ${passwordHash})
+      `
+      return user
+    })
   } catch (err) {
     const pgError = err as { code?: string; constraint_name?: string }
     if (pgError.code === '23505') {
@@ -58,10 +65,11 @@ export async function authenticateUser(
   const [row] = await sql<
     { id: string; email: string; handle: string; password_hash: string; createdAt: string }[]
   >`
-    select id, email, handle, password_hash,
-      to_char(created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
-    from users
-    where email = ${email.toLowerCase()}
+    select u.id, u.email, u.handle, c.password_hash,
+      to_char(u.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt"
+    from users u
+    join user_credentials c on c.user_id = u.id
+    where u.email = ${email.toLowerCase()}
   `
   const ok = await verifySecret(password, row?.password_hash ?? DUMMY_PASSWORD_HASH)
   if (!row || !ok) return null

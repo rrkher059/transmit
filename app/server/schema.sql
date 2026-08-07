@@ -12,8 +12,12 @@ create table if not exists users (
   id            uuid primary key,
   email         text not null unique,
   handle        text not null unique,
-  password_hash text not null,
   created_at    timestamptz not null default now()
+);
+
+create table if not exists user_credentials (
+  user_id       uuid primary key references users(id) on delete cascade,
+  password_hash text not null
 );
 
 create table if not exists follows (
@@ -135,3 +139,22 @@ alter table follows add constraint follows_no_self_follow check (follower_id <> 
 
 alter table blocks drop constraint if exists blocks_no_self_block;
 alter table blocks add constraint blocks_no_self_block check (blocker_id <> blocked_id);
+
+-- Move password_hash off users onto user_credentials. Guarded by an
+-- information_schema check (not just IF EXISTS on the DROP) because the
+-- INSERT itself references users.password_hash — on a database where this
+-- has already run, that column is gone and the INSERT would fail to plan.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'users' and column_name = 'password_hash'
+  ) then
+    insert into user_credentials (user_id, password_hash)
+    select id, password_hash from users
+    where password_hash is not null
+    on conflict (user_id) do nothing;
+
+    alter table users drop column password_hash;
+  end if;
+end $$;

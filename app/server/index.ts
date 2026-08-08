@@ -52,7 +52,7 @@ const app = createApp()
 app.get('/', (c) =>
   c.json({
     ok: true,
-    service: '7ransmi7-api',
+    service: 'transmit-api',
     health: '/api/health',
   }),
 )

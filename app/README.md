@@ -1,4 +1,4 @@
-# 7RANSMI7 (`app/`)
+# Transmit (`app/`)
 
 Short-lived social network: Vite + React client, Hono API, shared Zod schemas, Postgres with row-level security. Posts stay live for 24 hours after posting (`TWEET_TTL_MS`) — enforced by filtering on `created_at` at read time in every query, not by deleting rows.
 
@@ -24,7 +24,7 @@ From the repo root you can also use `npm run dev` (delegates to `app/`).
 | `npm run test:watch` | Vitest in watch mode |
 | `npm run lint` | oxlint |
 | `npm run preview` | Preview the production build locally |
-| `npm run deploy` | Build and push `dist/` to GitHub Pages |
+| `npm run deploy` | Leftover from the old GitHub Pages hosting — **not** the live deploy path anymore (see Deploy below) |
 | `npm run db:schema` | Apply `server/schema.sql` using `.env` |
 | `npm run db:schema:test` | Apply `server/schema.sql` using `.env.test` |
 
@@ -80,8 +80,11 @@ A couple of tests (`server/deleteOwnership.test.ts`, `server/blockVisibility.tes
 
 ## Deploy
 
-- **Client:** GitHub Pages (static Vite build). Point `VITE_API_BASE_URL` at the API.
-- **API:** Render (or similar Node host). Set `SESSION_SECRET`, `DATABASE_URL` (`app_user`), `SUPABASE_JWT_SECRET`, `ALLOWED_ORIGINS`, and optional OpenRouter keys. Enable `TRUST_PROXY` / rely on `RENDER` for rate-limit IP headers. Run `npm run db:schema` (with `SCHEMA_DATABASE_URL` set to the privileged connection) against production before first deploy.
+- **Client:** Vercel — https://transmit-blond.vercel.app (static Vite build: `npm run build`, output `dist/`). Point `VITE_API_BASE_URL` at the API in Vercel's project environment variables.
+- **API:** Render. Set `SESSION_SECRET`, `DATABASE_URL` (`app_user`), `SUPABASE_JWT_SECRET`, `ALLOWED_ORIGINS`, and optional OpenRouter keys. Enable `TRUST_PROXY` / rely on `RENDER` for rate-limit IP headers. Run `npm run db:schema` (with `SCHEMA_DATABASE_URL` set to the privileged connection) against production before first deploy.
+- **Database:** Postgres via Supabase, with row-level security — see Data / RLS above.
+
+The API's live hostname (`sevenransmi7.onrender.com`, see `src/config.ts`'s `RENDER_API_ORIGIN`) predates the Transmit rename and hasn't changed — it's an infrastructure identifier, not app branding, so it's intentionally left as-is here and in the client code that references it.
 
 ## Security notes
 

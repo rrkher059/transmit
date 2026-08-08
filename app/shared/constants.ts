@@ -1,5 +1,5 @@
 /** Shared product limits — single source of truth for client and API. */
-export const APP_NAME = '7RANSMI7'
+export const APP_NAME = 'Transmit'
 export const APP_VERSION = 'v1.2'
 export const TWEET_MAX_CHARS = 280
 export const TWEET_TTL_MS = 24 * 60 * 60 * 1000

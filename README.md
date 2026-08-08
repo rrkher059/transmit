@@ -1,15 +1,15 @@
-# 7RANSMI7
+# Transmit
 
 Short-lived social network built with a Vite + React client and a Hono API.
 
-**Live:** https://rrkher059-cloud.github.io/7ransmi7
+**Live:** https://transmit-blond.vercel.app
 
 ## Stack
 
-- React / Vite (frontend)
-- Hono (API)
+- React / Vite (frontend, hosted on Vercel)
+- Hono (API, hosted on Render)
 - Zod (shared schemas)
-- Postgres (persistence)
+- Postgres via Supabase, with row-level security
 
 ## Setup
 

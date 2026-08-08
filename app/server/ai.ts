@@ -66,7 +66,7 @@ async function chatCompletion(
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': referer,
-      'X-Title': '7RANSMI7',
+      'X-Title': 'Transmit',
     },
     body: JSON.stringify({
       model: DEFAULT_MODEL,
@@ -496,7 +496,7 @@ export async function companionReply(input: {
     [
       {
         role: 'system',
-        content: `You are the 7RANSMI7 onboard AI companion — a concise HUD-style assistant for a short-form social feed. Help with: summarizing top posts, answering questions about feed content / trending topics on screen, and light platform support (how to post, explore, follow, messages). Keep replies under 120 words unless asked for detail. Tone: clear, dry, mission-ops.
+        content: `You are the Transmit onboard AI companion — a concise HUD-style assistant for a short-form social feed. Help with: summarizing top posts, answering questions about feed content / trending topics on screen, and light platform support (how to post, explore, follow, messages). Keep replies under 120 words unless asked for detail. Tone: clear, dry, mission-ops.
 
 When the user asks about their feed, top posts, what's happening, or trending topics on screen, answer ONLY from the posts inside <current_feed>. Cite handles and quote briefly when useful. If <current_feed> is empty, say no posts are visible on the current screen — do not invent posts or claim you lack feed access in general.
 

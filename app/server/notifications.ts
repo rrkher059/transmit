@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { getSql } from './db.ts'
+import { getSql, withRequestUser } from './db.ts'
 
 export type AppNotification = {
   id: string
@@ -13,10 +13,26 @@ export type AppNotification = {
   read: boolean
 }
 
-const PER_USER_CAP = 200
+export const PER_USER_CAP = 200
 
-/** No actorHandle param — no such column, joined from users on read. Caps
- * at PER_USER_CAP, scoped to just this recipient (an indexed delete).
+/** Plain INSERT, no RETURNING: Postgres subjects RETURNING output to the
+ * table's SELECT policy, not just INSERT's WITH CHECK — and
+ * notifications_select_recipient only lets the recipient read a row, never
+ * the actor creating it (they're essentially always different people; that's
+ * the whole point of a notification). RETURNING the row here would fail RLS
+ * for every real cross-user call. No caller used the return value anyway
+ * (all 5 call sites in app.ts are bare `await pushNotification(...)`), so
+ * this drops it rather than working around it. Caps at PER_USER_CAP, scoped
+ * to just this recipient (an indexed delete) — run under the recipient's
+ * own Postgres identity (withRequestUser), not the caller's: pushNotification
+ * is always invoked while the request's identity is the actor (whoever's
+ * liking/commenting/following), and notifications_delete_recipient requires
+ * auth.uid() = recipient_id. Since actor and recipient are guaranteed
+ * different (see the early return below), the prune delete would otherwise
+ * always fail its own USING clause and silently affect 0 rows — the exact
+ * bug notifications_delete_recipient was added to fix, just recreated one
+ * level up. Safe to switch identity for this one write: it's a maintenance
+ * operation on the recipient's own inbox, scoped by recipient_id regardless.
  */
 export async function pushNotification(input: {
   recipientId: string
@@ -24,46 +40,32 @@ export async function pushNotification(input: {
   actorId: string
   tweetId?: string | null
   body?: string | null
-}): Promise<AppNotification | null> {
-  if (input.recipientId === input.actorId) return null
+}): Promise<void> {
+  if (input.recipientId === input.actorId) return
 
   const sql = getSql()
 
-  const [notification] = await sql<AppNotification[]>`
-    with inserted as (
-      insert into notifications (id, recipient_id, type, actor_id, tweet_id, body)
-      values (
-        ${randomUUID()}, ${input.recipientId}, ${input.type}, ${input.actorId},
-        ${input.tweetId ?? null}, ${input.body ?? null}
-      )
-      returning id, recipient_id, type, actor_id, tweet_id, body, created_at, read
-    )
-    select
-      inserted.id,
-      inserted.recipient_id as "recipientId",
-      inserted.type,
-      inserted.actor_id as "actorId",
-      u.handle as "actorHandle",
-      inserted.tweet_id as "tweetId",
-      inserted.body,
-      to_char(inserted.created_at at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "createdAt",
-      inserted.read
-    from inserted
-    join users u on u.id = inserted.actor_id
-  `
-
   await sql`
-    delete from notifications
-    where recipient_id = ${input.recipientId}
-      and id not in (
-        select id from notifications
-        where recipient_id = ${input.recipientId}
-        order by created_at desc
-        limit ${PER_USER_CAP}
-      )
+    insert into notifications (id, recipient_id, type, actor_id, tweet_id, body)
+    values (
+      ${randomUUID()}, ${input.recipientId}, ${input.type}, ${input.actorId},
+      ${input.tweetId ?? null}, ${input.body ?? null}
+    )
   `
 
-  return notification
+  await withRequestUser(input.recipientId, async () => {
+    const pruneSql = getSql()
+    await pruneSql`
+      delete from notifications
+      where recipient_id = ${input.recipientId}
+        and id not in (
+          select id from notifications
+          where recipient_id = ${input.recipientId}
+          order by created_at desc
+          limit ${PER_USER_CAP}
+        )
+    `
+  })
 }
 
 /** Plain keyset pagination on created_at. Fetches limit+1 to know whether

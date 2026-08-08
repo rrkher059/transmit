@@ -216,6 +216,23 @@ function aiClientMessage(error: Error & { code?: string }): string {
 export function createApp() {
   const app = new Hono<{ Variables: AppVariables }>()
 
+  // Backstop for anything thrown outside a route's own try/catch — e.g. the
+  // Postgres-identity middleware below, which runs before every route's
+  // handler even starts. Without this, Hono's default errorHandler
+  // (node_modules/hono/dist/hono-base.js) logs it but returns plain text
+  // ("Internal Server Error"), breaking the JSON error shape every route
+  // otherwise guarantees. Still honors HTTPException-style errors (anything
+  // with getResponse()) exactly like Hono's default does, so bodyLimit and
+  // any future explicit c.notFound()/HTTPException throws keep their own
+  // responses untouched.
+  app.onError((err, c) => {
+    if (err && typeof err === 'object' && 'getResponse' in err) {
+      return (err as { getResponse: () => Response }).getResponse()
+    }
+    console.error(err)
+    return c.json(errorBody('INTERNAL_ERROR', 'Something went wrong.'), 500)
+  })
+
   app.use('*', secureHeaders())
   app.use(
     '*',

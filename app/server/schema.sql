@@ -213,26 +213,26 @@ revoke all on user_credentials from app_user;
 -- app_user deliberately doesn't. user_credentials is deliberately excluded
 -- from all of this and must stay that way — it has no legitimate
 -- row-level rule to write, only the two SECURITY DEFINER functions above
--- should ever touch it. blocks keeps its placeholder allow-all policy —
--- block-aware visibility is a separate, later step, not this one.
+-- should ever touch it.
 drop policy if exists app_user_placeholder_allow_all on users;
 drop policy if exists app_user_placeholder_allow_all on follows;
 drop policy if exists app_user_placeholder_allow_all on tweets;
 drop policy if exists app_user_placeholder_allow_all on likes;
 drop policy if exists app_user_placeholder_allow_all on comments;
 drop policy if exists app_user_placeholder_allow_all on reactions;
+drop policy if exists app_user_placeholder_allow_all on blocks;
 drop policy if exists app_user_placeholder_allow_all on messages;
 drop policy if exists app_user_placeholder_allow_all on notifications;
 
 -- Symmetric block-aware visibility helper: true iff a and b block each
 -- other in either direction. Not SECURITY DEFINER — runs as the caller
--- (app_user), reading blocks under its own (still placeholder, allow-all)
--- policy, which is exactly what's needed: this check must see every blocks
--- row regardless of who's asking, not a subset filtered by blocks' own
--- (not yet designed) policy. auth.uid() is null for guests, and no blocks
--- row can have a null blocker_id/blocked_id (both NOT NULL), so this is
--- always false for guests — they're unaffected by block filtering below,
--- same as before this change.
+-- (app_user), reading blocks under its own select-open policy (below),
+-- which is exactly what's needed: this check must see every blocks row
+-- regardless of who's asking, not a subset filtered by some other rule.
+-- auth.uid() is null for guests, and no blocks row can have a null
+-- blocker_id/blocked_id (both NOT NULL), so this is always false for
+-- guests — they're unaffected by block filtering below, same as before
+-- this change.
 create or replace function is_blocked_pair(a uuid, b uuid)
 returns boolean
 language sql
@@ -244,6 +244,17 @@ as $$
        or (blocker_id = b and blocked_id = a)
   )
 $$;
+
+-- blocks: who's blocked is public (needed for is_blocked_pair() above to
+-- work for every viewer, guests included, and there's no real sensitivity
+-- in the fact that a block relationship exists). Insert/delete only as the
+-- blocker — "yourself" here is the blocker side, same shape as follows.
+drop policy if exists blocks_select_public on blocks;
+drop policy if exists blocks_insert_own on blocks;
+drop policy if exists blocks_delete_own on blocks;
+create policy blocks_select_public on blocks for select to app_user using (true);
+create policy blocks_insert_own on blocks for insert to app_user with check (auth.uid() = blocker_id);
+create policy blocks_delete_own on blocks for delete to app_user using (auth.uid() = blocker_id);
 
 -- tweets / comments / likes / reactions / follows: reads are open to
 -- everyone, including guests (auth.uid() is null for them, never `using
@@ -328,16 +339,24 @@ create policy messages_insert_as_sender on messages for insert to app_user
 -- notifications: also already 401-gated for guests at the app layer. Insert
 -- is "as yourself" in actor terms — you can create a notification for any
 -- recipient, but only with yourself as the actor, not impersonating someone
--- else's action.
+-- else's action. Delete is recipient-only — server/notifications.ts's
+-- pushNotification() prunes each recipient down to PER_USER_CAP (200) on
+-- every push; without this policy that DELETE silently affected 0 rows
+-- (RLS default-denies a command with no matching policy, no error thrown)
+-- and the cap was never actually enforced. Found by audit, confirmed
+-- empirically against the test database before this fix.
 drop policy if exists notifications_select_recipient on notifications;
 drop policy if exists notifications_update_recipient on notifications;
 drop policy if exists notifications_insert_as_actor on notifications;
+drop policy if exists notifications_delete_recipient on notifications;
 create policy notifications_select_recipient on notifications for select to app_user
   using (auth.uid() = recipient_id);
 create policy notifications_update_recipient on notifications for update to app_user
   using (auth.uid() = recipient_id) with check (auth.uid() = recipient_id);
 create policy notifications_insert_as_actor on notifications for insert to app_user
   with check (auth.uid() = actor_id);
+create policy notifications_delete_recipient on notifications for delete to app_user
+  using (auth.uid() = recipient_id);
 
 -- Runs as its owner (whichever role applies this schema — currently
 -- postgres), so it can read user_credentials even though app_user itself
